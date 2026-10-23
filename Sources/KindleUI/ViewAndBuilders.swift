@@ -388,18 +388,15 @@ public struct ViewBuilder {
         ])
     }
 
-    public static func buildOptional<Content: View>(_ content: Content?) -> AnyView {
-        if let content = content {
-            return AnyView(content)
-        }
-        return AnyView(EmptyView())
+    public static func buildOptional<Content: View>(_ content: Content?) -> Content? {
+        content
     }
 
-    public static func buildEither<TrueContent: View, FalseContent: View>(first component: TrueContent) -> AnyView {
+    public static func buildEither<Content: View>(first component: Content) -> AnyView {
         AnyView(component)
     }
 
-    public static func buildEither<TrueContent: View, FalseContent: View>(second component: FalseContent) -> AnyView {
+    public static func buildEither<Content: View>(second component: Content) -> AnyView {
         AnyView(component)
     }
 

@@ -7,6 +7,18 @@ public struct EmptyView: View, _PrimitiveView {
     public func _makeNode() -> RenderNode { .empty }
 }
 
+extension Optional: View, _PrimitiveView where Wrapped: View {
+    public typealias Body = Never
+    public func _makeNode() -> RenderNode {
+        switch self {
+        case .some(let wrapped):
+            return wrapped.buildRenderTree()
+        case .none:
+            return .empty
+        }
+    }
+}
+
 /// A View created from a swift tuple of View values.
 public struct TupleView<T>: View, _PrimitiveView {
     public typealias Body = Never

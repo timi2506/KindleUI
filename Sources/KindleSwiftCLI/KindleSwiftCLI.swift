@@ -60,8 +60,13 @@ enum KindleTarget: String {
     }
 }
 
+@main
 final class KindleSwiftTool {
     let fm = FileManager.default
+
+    static func main() {
+        KindleSwiftTool().run()
+    }
 
     func run() {
         let cli = CLIConfig.parse(CommandLine.arguments)
@@ -105,6 +110,7 @@ final class KindleSwiftTool {
             try fm.createDirectory(atPath: kualDir, withIntermediateDirectories: true)
 
             let kindleUIPath = resolveKindleUIPackageRoot()
+            let kindleUIPackageIdentity = (kindleUIPath as NSString).lastPathComponent
 
             let packageSwift = """
             // swift-tools-version: 5.9
@@ -122,7 +128,7 @@ final class KindleSwiftTool {
                     .executableTarget(
                         name: "\(safeName)",
                         dependencies: [
-                            .product(name: "KindleUI", package: "KindleSwift")
+                            .product(name: "KindleUI", package: "\(kindleUIPackageIdentity)")
                         ],
                         path: "Sources/\(safeName)"
                     )
@@ -644,5 +650,3 @@ final class KindleSwiftTool {
         """)
     }
 }
-
-KindleSwiftTool().run()

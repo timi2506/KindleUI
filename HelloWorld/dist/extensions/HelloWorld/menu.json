@@ -1,0 +1,10 @@
+{
+    "items": [
+        {
+            "name": "Launch HelloWorld",
+            "priority": 1,
+            "action": "./bin/HelloWorld",
+            "exitmenu": true
+        }
+    ]
+}

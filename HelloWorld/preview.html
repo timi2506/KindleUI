@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>L:A_N:application_PC:TS_O:UDLR_RC:custom_RCTL_RCTR_ID:org.kindlemodding.helloworld</title>
+<style>
+  body {
+    background: #252525;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 24px;
+    font-family: "Bookerly", Georgia, serif;
+    color: #111;
+  }
+  .kindle-bezel {
+    background: #1a1a1a;
+    padding: 28px 24px 48px 24px;
+    border-radius: 22px;
+    box-shadow: 0 16px 40px rgba(0,0,0,0.65);
+  }
+  .eink-screen {
+    width: 600px;
+    min-height: 800px;
+    background: #f4f4f0;
+    border: 2px solid #000;
+    display: flex;
+    flex-direction: column;
+    box-sizing: border-box;
+  }
+  .chrome-top {
+    border-bottom: 2px solid #000;
+    padding: 6px 12px;
+    font-family: sans-serif;
+    font-size: 13px;
+    font-weight: bold;
+    display: flex;
+    justify-content: space-between;
+    background: #eee;
+  }
+  .chrome-search {
+    border-bottom: 1px solid #000;
+    padding: 6px 12px;
+    font-family: sans-serif;
+    font-size: 13px;
+    background: #f9f9f9;
+  }
+  .content {
+    padding: 12px;
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .k-card {
+    border: 2px solid #111;
+    padding: 10px;
+    background: #fafaf7;
+  }
+  .k-card-title {
+    font-weight: bold;
+    font-family: sans-serif;
+    margin-bottom: 6px;
+    border-bottom: 1px solid #444;
+    padding-bottom: 4px;
+  }
+  .k-btn {
+    border: 2px solid #000;
+    background: #fff;
+    color: #000;
+    padding: 8px 14px;
+    font-weight: bold;
+    font-family: sans-serif;
+    cursor: pointer;
+    box-shadow: 2px 2px 0 #000;
+  }
+  .k-btn:active {
+    background: #000;
+    color: #fff;
+  }
+  .awesome-meta {
+    color: #bbb;
+    font-family: monospace;
+    font-size: 12px;
+    margin-bottom: 10px;
+  }
+</style>
+</head>
+<body>
+  <div class="awesome-meta">AwesomeWM Title: <strong>L:A_N:application_PC:TS_O:UDLR_RC:custom_RCTL_RCTR_ID:org.kindlemodding.helloworld</strong></div>
+  <div class="kindle-bezel">
+    <div class="eink-screen">
+      <div class='chrome-top'><span>⌂ Kindle</span><span>org.kindlemodding.helloworld</span><span>87% 🔋</span></div>
+      <div class='chrome-search'>🔍 Search Kindle</div>
+      <div class="content">
+        <div style='overflow-y:auto;flex:1;'><div style='display:flex;flex-direction:column;align-items:flex-start;gap:14px;padding:16px 16px 16px 16px;'><div style='position:relative;display:flex;flex-direction:column;gap:4px;'><div style='display:flex;flex-direction:column;align-items:center;gap:4px;background-color:#EEEEEE;border:2px solid #000000;padding:10px 12px 10px 12px;'><div style='text-align:center;white-space:normal;font-family:Serif, serif;font-size:25px;font-weight:bold;'>Hello, World! — KindleUI Full Showcase</div>
+<div style='text-align:center;white-space:normal;color:#444444;font-family:Sans, serif;font-size:15px;font-weight:normal;font-style:italic;'>Every view, control, modifier, font, E-Ink shade, AwesomeWM rule & LIPC bridge</div></div></div>
+<hr style='border:0;border-top:2px solid #000;width:100%;' />
+<div class='k-card' style=''><div class='k-card-title'>1. AwesomeWM Window Manager Engine</div><div style='display:flex;flex-direction:column;align-items:flex-start;gap:8px;'><div style='text-align:left;white-space:normal;font-family:Monospace, serif;font-size:14px;font-weight:normal;'>Active Title: L:A_N:application_PC:TS_O:UDLR_RC:custom_RCTL_RCTR_ID:org.kindlemodding.helloworld</div>
+<div style='display:flex;flex-direction:row;align-items:center;gap:8px;'><button class='k-btn' style=''>App (Top+Search)</button>
+<button class='k-btn' style=''>Full-Screen App</button>
+<button class='k-btn' style=''>Modal RKB Dialog</button></div></div></div>
+<div class='k-card' style=''><div class='k-card-title'>2. Reactive @State, @Binding & Controls</div><div style='display:flex;flex-direction:column;align-items:flex-start;gap:8px;'><div style='display:flex;flex-direction:row;align-items:center;gap:8px;'><div style='text-align:left;white-space:normal;font-family:Sans, serif;font-size:17px;font-weight:bold;'>Bound Counter: 3</div>
+<div style='flex:1;min-height:8px;min-width:8px;'></div>
+<button class='k-btn' style=''>+1</button>
+<button class='k-btn' style=''>-1</button>
+<button class='k-btn' style=''>Reset (Custom Label)</button></div>
+<hr style='border:0;border-top:2px solid #000;width:100%;' />
+<label style='display:flex;align-items:center;gap:6px;'><input type='checkbox' checked /> Show Advanced Typography & Palette Details</label>
+<div style='text-align:left;white-space:normal;color:#222222;font-family:Sans, serif;font-size:13px;font-weight:normal;'>Conditional branch: True (rendered via ViewBuilder.buildEither)</div>
+<div style='display:flex;flex-direction:row;align-items:center;gap:8px;'><input type='text' placeholder='Enter a note...' value='Hello, Kindle World!' style='border:2px solid #000;padding:6px;background:#fff;flex:1;' />
+<button class='k-btn' style=''>Add to List</button></div>
+<div style='text-align:left;white-space:normal;font-family:Sans, serif;font-size:13px;font-weight:normal;'>Live TextField Value: "Hello, Kindle World!"</div></div></div>
+<div class='k-card' style=''><div class='k-card-title'>3. Kindle LIPC Hardware Bridge (com.lab126.powerd)</div><div style='display:flex;flex-direction:column;align-items:flex-start;gap:8px;'><label style='display:flex;align-items:center;gap:6px;'><input type='checkbox'  /> Prevent Screensaver Sleep (preventScreenSaver)</label>
+<div style='text-align:left;white-space:normal;font-family:Sans, serif;font-size:17px;font-weight:bold;'>Frontlight Intensity (flIntensity): 12 / 24</div>
+<input type='range' min='0.0' max='24.0' step='1.0' value='12.0' style='' />
+<div style='display:flex;flex-direction:row;align-items:center;gap:12px;'><button class='k-btn' style=''>Dim (0)</button>
+<button class='k-btn' style=''>Medium (12)</button>
+<button class='k-btn' style=''>Max (24)</button></div>
+<div style='border:2px solid #000;height:20px;background:#eee;position:relative;width:100%;box-sizing:border-box;'><div style='width:87%;height:100%;background:#222;'></div><span style='position:absolute;top:1px;left:8px;font-size:11px;color:#888;'>Kindle Battery Level: 87%</span></div></div></div>
+<div class='k-card' style=''><div class='k-card-title'>4. Kindle Pango Typography & 16-Shade E-Ink Palette</div><div style='display:flex;flex-direction:column;align-items:flex-start;gap:6px;'><div style='text-align:left;white-space:normal;font-family:Serif, serif;font-size:21px;font-weight:bold;'>• .title — Serif Bold 18pt</div>
+<div style='text-align:left;white-space:normal;font-family:Sans, serif;font-size:17px;font-weight:bold;'>• .headline — Sans Bold 14pt</div>
+<div style='text-align:left;white-space:normal;font-family:Bookerly, Serif, serif;font-size:17px;font-weight:normal;font-style:italic;'>• .bookerly(size: 14, italic: true) — Native Kindle Bookerly</div>
+<div style='text-align:left;white-space:normal;font-family:Serif, serif;font-size:15px;font-weight:normal;'>• .body — Serif Regular 12pt</div>
+<div style='text-align:left;white-space:normal;font-family:Sans, serif;font-size:13px;font-weight:normal;'>• .caption — Sans Regular 10pt</div>
+<div style='text-align:left;white-space:normal;font-family:Monospace, serif;font-size:14px;font-weight:normal;'>• .monospaced — Monospace 11pt</div>
+<div style='text-align:left;white-space:normal;font-family:Futura, serif;font-size:16px;font-weight:bold;'>• .custom("Futura", size: 13, bold: true)</div>
+<hr style='border:0;border-top:2px solid #000;width:100%;' />
+<div style='text-align:left;white-space:normal;font-family:Sans, serif;font-size:13px;font-weight:bold;'>16-Level E-Ink Grayscale Swatches (0 = Black Ink .. 15 = Paper White):</div>
+<div style='display:flex;flex-direction:row;align-items:center;gap:4px;'><div style='text-align:left;white-space:normal;color:#FFFFFF;background-color:#000000;border:1px solid #000000;padding:6px 6px 6px 6px;font-family:Sans, serif;font-size:13px;font-weight:normal;'>S0</div>
+<div style='text-align:left;white-space:normal;color:#FFFFFF;background-color:#333333;border:1px solid #000000;padding:6px 6px 6px 6px;font-family:Sans, serif;font-size:13px;font-weight:normal;'>S3</div>
+<div style='text-align:left;white-space:normal;color:#FFFFFF;background-color:#666666;border:1px solid #000000;padding:6px 6px 6px 6px;font-family:Sans, serif;font-size:13px;font-weight:normal;'>S6</div>
+<div style='text-align:left;white-space:normal;color:#000000;background-color:#999999;border:1px solid #000000;padding:6px 6px 6px 6px;font-family:Sans, serif;font-size:13px;font-weight:normal;'>S9</div>
+<div style='text-align:left;white-space:normal;color:#000000;background-color:#CCCCCC;border:1px solid #000000;padding:6px 6px 6px 6px;font-family:Sans, serif;font-size:13px;font-weight:normal;'>S12</div>
+<div style='text-align:left;white-space:normal;color:#000000;background-color:#FFFFFF;border:1px solid #000000;padding:6px 6px 6px 6px;font-family:Sans, serif;font-size:13px;font-weight:normal;'>S15</div></div></div></div>
+<div class='k-card' style=''><div class='k-card-title'>5. List, ForEach, Image & Layout Modifiers</div><div style='display:flex;flex-direction:column;align-items:flex-start;gap:8px;'><div style='overflow-y:auto;min-height:140px;flex:1;'><div style='display:flex;flex-direction:column;align-items:flex-start;gap:2px;'><div style='display:flex;flex-direction:row;align-items:center;gap:8px;padding:6px 8px 6px 8px;'><div style='text-align:left;white-space:normal;font-family:Serif, serif;font-size:15px;font-weight:normal;'>1. Declarative @ViewBuilder DSL</div>
+<div style='flex:1;'></div>
+<div style='width:2px;min-height:20px;background:#000;'></div>
+<div style='text-align:left;white-space:normal;font-family:Sans, serif;font-size:13px;font-weight:bold;'>OK</div></div>
+<hr style='border:0;border-top:2px solid #000;width:100%;' />
+<div style='display:flex;flex-direction:row;align-items:center;gap:8px;padding:6px 8px 6px 8px;'><div style='text-align:left;white-space:normal;font-family:Serif, serif;font-size:15px;font-weight:normal;'>2. 16-Shade E-Ink Palette & Bookerly Fonts</div>
+<div style='flex:1;'></div>
+<div style='width:2px;min-height:20px;background:#000;'></div>
+<div style='text-align:left;white-space:normal;font-family:Sans, serif;font-size:13px;font-weight:bold;'>OK</div></div>
+<hr style='border:0;border-top:2px solid #000;width:100%;' />
+<div style='display:flex;flex-direction:row;align-items:center;gap:8px;padding:6px 8px 6px 8px;'><div style='text-align:left;white-space:normal;font-family:Serif, serif;font-size:15px;font-weight:normal;'>3. AwesomeWM Window Title Generator</div>
+<div style='flex:1;'></div>
+<div style='width:2px;min-height:20px;background:#000;'></div>
+<div style='text-align:left;white-space:normal;font-family:Sans, serif;font-size:13px;font-weight:bold;'>OK</div></div>
+<hr style='border:0;border-top:2px solid #000;width:100%;' />
+<div style='display:flex;flex-direction:row;align-items:center;gap:8px;padding:6px 8px 6px 8px;'><div style='text-align:left;white-space:normal;font-family:Serif, serif;font-size:15px;font-weight:normal;'>4. LIPC Hardware Bridge (Frontlight & Battery)</div>
+<div style='flex:1;'></div>
+<div style='width:2px;min-height:20px;background:#000;'></div>
+<div style='text-align:left;white-space:normal;font-family:Sans, serif;font-size:13px;font-weight:bold;'>OK</div></div></div></div>
+<div style='display:flex;flex-direction:row;align-items:center;gap:10px;'><div style='border:1px dashed #333;padding:6px;font-size:12px;background:#eaeae4;width:180px;min-height:36px;'>🖼 <strong>Kindle App Icon</strong> (<code>/mnt/us/extensions/HelloWorld/icon.png</code>)</div>
+<div style='text-align:left;white-space:normal;background-color:#CCCCCC;border:1px solid #222222;padding:0px 8px 0px 8px;font-family:Sans, serif;font-size:13px;font-weight:normal;'>Wrapped in AnyView</div></div></div></div>
+<div style='flex:1;min-height:12px;min-width:12px;'></div></div></div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

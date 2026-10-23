@@ -300,47 +300,123 @@ public final class EInkSimulatorRenderer: @unchecked Sendable {
         """
     }
 
+    private static func styleCSS(_ style: ViewStyle, extra: String = "") -> String {
+        var rules: [String] = []
+        if !extra.isEmpty { rules.append(extra) }
+        if let fg = style.foregroundColor {
+            rules.append("color:\(fg.hexString);")
+        }
+        if let bg = style.backgroundColor {
+            rules.append("background-color:\(bg.hexString);")
+        }
+        if style.borderWidth > 0, let bc = style.borderColor {
+            rules.append("border:\(style.borderWidth)px solid \(bc.hexString);")
+        }
+        if let p = style.padding {
+            rules.append("padding:\(p.top)px \(p.trailing)px \(p.bottom)px \(p.leading)px;")
+        }
+        if let w = style.width {
+            rules.append("width:\(w)px;")
+        }
+        if let h = style.height {
+            rules.append("min-height:\(h)px;")
+        }
+        if style.expand {
+            rules.append("flex:1;")
+        }
+        if let font = style.font {
+            rules.append("font-family:\(font.family), serif;")
+            rules.append("font-size:\(font.sizePoints + 3)px;")
+            rules.append("font-weight:\(font.isBold ? "bold" : "normal");")
+            if font.isItalic {
+                rules.append("font-style:italic;")
+            }
+        }
+        return rules.joined()
+    }
+
     private static func renderHTMLNode(_ node: RenderNode) -> String {
         switch node {
         case .empty:
             return ""
         case .group(let children):
             return children.map(renderHTMLNode).joined(separator: "\n")
-        case .vstack(_, let spacing, let children, _):
+        case .vstack(let alignment, let spacing, let children, let style):
             let inner = children.map(renderHTMLNode).joined(separator: "\n")
-            return "<div style='display:flex;flex-direction:column;gap:\(spacing)px;'>\(inner)</div>"
-        case .hstack(_, let spacing, let children, _):
+            let alignCSS: String
+            switch alignment {
+            case .leading: alignCSS = "flex-start"
+            case .center: alignCSS = "center"
+            case .trailing: alignCSS = "flex-end"
+            }
+            let css = styleCSS(style, extra: "display:flex;flex-direction:column;align-items:\(alignCSS);gap:\(spacing)px;")
+            return "<div style='\(css)'>\(inner)</div>"
+        case .hstack(let alignment, let spacing, let children, let style):
             let inner = children.map(renderHTMLNode).joined(separator: "\n")
-            return "<div style='display:flex;flex-direction:row;align-items:center;gap:\(spacing)px;'>\(inner)</div>"
-        case .zstack(_, let children, _):
+            let alignCSS: String
+            switch alignment {
+            case .top: alignCSS = "flex-start"
+            case .center: alignCSS = "center"
+            case .bottom: alignCSS = "flex-end"
+            }
+            let css = styleCSS(style, extra: "display:flex;flex-direction:row;align-items:\(alignCSS);gap:\(spacing)px;")
+            return "<div style='\(css)'>\(inner)</div>"
+        case .zstack(_, let children, let style):
             let inner = children.map(renderHTMLNode).joined(separator: "\n")
-            return "<div style='position:relative;'>\(inner)</div>"
-        case .scrollView(_, let child, _):
-            return "<div style='overflow-y:auto;'>\(renderHTMLNode(child))</div>"
-        case .card(let title, let child, _):
+            let css = styleCSS(style, extra: "position:relative;display:flex;flex-direction:column;gap:4px;")
+            return "<div style='\(css)'>\(inner)</div>"
+        case .scrollView(_, let child, let style):
+            let css = styleCSS(style, extra: "overflow-y:auto;")
+            return "<div style='\(css)'>\(renderHTMLNode(child))</div>"
+        case .card(let title, let child, let style):
             let titleHTML = title.map { "<div class='k-card-title'>\($0)</div>" } ?? ""
-            return "<div class='k-card'>\(titleHTML)\(renderHTMLNode(child))</div>"
-        case .text(let content, _, _, let style):
-            let weight = (style.font?.isBold ?? false) ? "bold" : "normal"
-            let size = style.font?.sizePoints ?? 13
-            return "<div style='font-weight:\(weight);font-size:\(size + 3)px;'>\(content)</div>"
-        case .button(let label, _, _, _):
-            return "<button class='k-btn'>\(label)</button>"
-        case .toggle(let label, let isOn, _, _):
-            return "<label style='display:flex;align-items:center;gap:6px;'><input type='checkbox' \(isOn ? "checked" : "") /> \(label)</label>"
-        case .textField(let placeholder, let text, _, _):
-            return "<input type='text' placeholder='\(placeholder)' value='\(text)' style='border:2px solid #000;padding:6px;background:#fff;' />"
-        case .slider(let value, let range, let step, _, _):
-            return "<input type='range' min='\(range.lowerBound)' max='\(range.upperBound)' step='\(step)' value='\(value)' />"
-        case .progressBar(let fraction, let text, _):
+            let css = styleCSS(style)
+            return "<div class='k-card' style='\(css)'>\(titleHTML)\(renderHTMLNode(child))</div>"
+        case .text(let content, let wrap, let alignment, let style):
+            let alignStr: String
+            switch alignment {
+            case .leading: alignStr = "left"
+            case .center: alignStr = "center"
+            case .trailing: alignStr = "right"
+            }
+            let wrapStr = wrap ? "normal" : "nowrap"
+            let css = styleCSS(style, extra: "text-align:\(alignStr);white-space:\(wrapStr);")
+            return "<div style='\(css)'>\(content)</div>"
+        case .button(let label, let customChild, _, let style):
+            let innerHTML: String
+            if !label.isEmpty {
+                innerHTML = label
+            } else if let customChild = customChild {
+                innerHTML = renderHTMLNode(customChild)
+            } else {
+                innerHTML = "Button"
+            }
+            let css = styleCSS(style)
+            return "<button class='k-btn' style='\(css)'>\(innerHTML)</button>"
+        case .toggle(let label, let isOn, _, let style):
+            let css = styleCSS(style, extra: "display:flex;align-items:center;gap:6px;")
+            return "<label style='\(css)'><input type='checkbox' \(isOn ? "checked" : "") /> \(label)</label>"
+        case .textField(let placeholder, let text, _, let style):
+            let css = styleCSS(style, extra: "border:2px solid #000;padding:6px;background:#fff;")
+            return "<input type='text' placeholder='\(placeholder)' value='\(text)' style='\(css)' />"
+        case .slider(let value, let range, let step, _, let style):
+            let css = styleCSS(style)
+            return "<input type='range' min='\(range.lowerBound)' max='\(range.upperBound)' step='\(step)' value='\(value)' style='\(css)' />"
+        case .progressBar(let fraction, let text, let style):
             let pct = Int(min(1.0, max(0.0, fraction)) * 100)
-            return "<div style='border:2px solid #000;height:20px;background:#eee;position:relative;'><div style='width:\(pct)%;height:100%;background:#222;'></div><span style='position:absolute;top:1px;left:8px;font-size:11px;color:#888;'>\(text ?? "\(pct)%")</span></div>"
-        case .divider(let vertical, _):
-            return vertical ? "<div style='width:2px;background:#000;'></div>" : "<hr style='border:0;border-top:2px solid #000;width:100%;' />"
-        case .spacer:
-            return "<div style='flex:1;'></div>"
-        case .image(let path, let altText, _):
-            return "<img src='\(path)' alt='\(altText)' />"
+            let css = styleCSS(style, extra: "border:2px solid #000;height:20px;background:#eee;position:relative;width:100%;box-sizing:border-box;")
+            return "<div style='\(css)'><div style='width:\(pct)%;height:100%;background:#222;'></div><span style='position:absolute;top:1px;left:8px;font-size:11px;color:#888;'>\(text ?? "\(pct)%")</span></div>"
+        case .divider(let vertical, let style):
+            let css = styleCSS(style)
+            return vertical
+                ? "<div style='width:2px;min-height:20px;background:#000;\(css)'></div>"
+                : "<hr style='border:0;border-top:2px solid #000;width:100%;\(css)' />"
+        case .spacer(let minLen, _):
+            let minCSS = minLen.map { "min-height:\($0)px;min-width:\($0)px;" } ?? ""
+            return "<div style='flex:1;\(minCSS)'></div>"
+        case .image(let path, let altText, let style):
+            let css = styleCSS(style, extra: "border:1px dashed #333;padding:6px;font-size:12px;background:#eaeae4;")
+            return "<div style='\(css)'>🖼 <strong>\(altText)</strong> (<code>\(path)</code>)</div>"
         }
     }
 }
