@@ -67,3 +67,15 @@ swift run kindle-swift build --target kindlehf --cross-file ~/x-tools/arm-kindle
 # Package into a KUAL extension (/mnt/us/extensions/...) and Kindle Home Scriptlet (.sh)
 swift run kindle-swift package --target kindlehf
 ```
+
+---
+
+## Full Real-Kindle Build & Deployment Guide
+
+For a complete, step-by-step walkthrough from scratch—covering Kindle preparation (Jailbreak, Hotfix, KUAL, USBNet), choosing between `kindlehf` and `kindlepw2`, setting up `koxtoolchain` + `kindle-sdk` on Apple Silicon macOS (via OrbStack/Lima) or Linux, cross-compiling, and deploying over USB or SSH—see:
+
+- **[`docs/BUILD_AND_DEPLOY_GUIDE.md`](docs/BUILD_AND_DEPLOY_GUIDE.md)** — Complete From-Scratch Build & Real Kindle Deployment Guide
+- **[`docs/prerequisites.html`](docs/prerequisites.html)** — KindleModding Toolchain & SDK Prerequisites Reference
+- **[`docs/setup.html`](docs/setup.html)** — KindleModding Meson + GTK+-2.0 Project Setup Reference
+- **[`docs/awesomeWindowManager.html`](docs/awesomeWindowManager.html)** — Kindle Awesome Window Manager Title Specification
+
