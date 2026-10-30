@@ -17,7 +17,7 @@
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/timi2506/KindleUI", from: "1.0.0")
+    .package(url: "https://github.com/KindleModding/KindleUI", from: "1.0.0")
 ],
 targets: [
     .executableTarget(name: "MyApp", dependencies: [
@@ -97,17 +97,15 @@ Passing `--preview` (with optional `--port <port>` and `--open`) starts `KindleP
 Make sure Docker Desktop (or OrbStack / Docker Engine) is running, then execute:
 
 ```sh
-./build.sh
+./build.sh                          # build every executable product in Examples/
+./build.sh MyApp                    # build only the named product(s)
+./build.sh -p path/to/pkg [APP ...] # build apps from your own package (must depend on KindleUI)
 ```
 
-`./build.sh` builds static-Swift-stdlib ARMv7 binaries with glibc `>= 2.20` compatibility shims for both ABIs in `dist/`:
+`./build.sh` builds static-Swift-stdlib ARMv7 binaries with glibc `>= 2.20` compatibility shims for both ABIs. For each app `<APP>` it writes to `dist/`:
 
-- **Hard-Float (`armhf` — Kindle FW `>= 5.16.3`, `/lib/ld-linux-armhf.so.3`)**:
-  - `dist/KindleWiki`
-  - `dist/KindleShowcase`
-- **Soft-Float (`softfp` — Kindle FW `< 5.16.3`, `/lib/ld-linux.so.3`)**:
-  - `dist/KindleWiki-softfp`
-  - `dist/KindleShowcase-softfp`
+- **Hard-Float (`armhf` — Kindle FW `>= 5.16.3`, `/lib/ld-linux-armhf.so.3`)**: `dist/<APP>`
+- **Soft-Float (`softfp` — Kindle FW `< 5.16.3`, `/lib/ld-linux.so.3`)**: `dist/<APP>-softfp`
 
 ### 3. Deploy & Run on a Kindle or QEMU Emulator
 
@@ -115,16 +113,21 @@ Make sure Docker Desktop (or OrbStack / Docker Engine) is running, then execute:
 
 ```sh
 # Copy the binary to /mnt/us/ on the Kindle
-scp dist/KindleWiki root@<kindle-ip>:/mnt/us/KindleWiki
-scp dist/KindleShowcase root@<kindle-ip>:/mnt/us/KindleShowcase
+scp dist/<APP> root@<kindle-ip>:/mnt/us/<APP>
 
 # Launch on the Kindle Xorg display
-ssh root@<kindle-ip> "chmod +x /mnt/us/KindleWiki && DISPLAY=:0 /mnt/us/KindleWiki"
+ssh root@<kindle-ip> "chmod +x /mnt/us/<APP> && DISPLAY=:0 /mnt/us/<APP>"
 ```
 
 *(For the local QEMU emulator listening on port `4022`:)*
 
 ```sh
-scp -P 4022 -i ~/Developer/eink-emulator/build/ssh/id_ed25519 dist/KindleWiki root@127.0.0.1:/mnt/us/KindleWiki
-ssh -p 4022 -i ~/Developer/eink-emulator/build/ssh/id_ed25519 root@127.0.0.1 "DISPLAY=:0 /mnt/us/KindleWiki"
+scp -P 4022 -i ~/Developer/eink-emulator/build/ssh/id_ed25519 dist/<APP> root@127.0.0.1:/mnt/us/<APP>
+ssh -p 4022 -i ~/Developer/eink-emulator/build/ssh/id_ed25519 root@127.0.0.1 "DISPLAY=:0 /mnt/us/<APP>"
+```
+
+#### Into the emulator disk image (emulator shut down)
+
+```sh
+scripts/deploy-emulator.sh [-e path/to/emulator] [APP ...]   # default: all dist/ binaries except *-softfp
 ```

@@ -1,13 +1,35 @@
 #!/usr/bin/env bash
-# Cross-compile the KindleUI example apps for armv7 (both hard-float armhf and soft-float softfp)
-# using Docker.
-# Outputs:
-#   dist/KindleShowcase         (hard-float /lib/ld-linux-armhf.so.3)
-#   dist/KindleWiki             (hard-float /lib/ld-linux-armhf.so.3)
-#   dist/KindleShowcase-softfp  (soft-float /lib/ld-linux.so.3)
-#   dist/KindleWiki-softfp      (soft-float /lib/ld-linux.so.3)
+# Cross-compile KindleUI apps for armv7 (both hard-float armhf and soft-float softfp) using Docker.
+#
+#   ./build.sh [-p|--package-path DIR] [APP ...]
+#
+#   DIR   SwiftPM package containing the apps (default: Examples). Must depend on KindleUI.
+#   APP   Executable products to build (default: every executable product in DIR).
+#
+# Outputs, for each APP:
+#   dist/<APP>          (hard-float /lib/ld-linux-armhf.so.3)
+#   dist/<APP>-softfp   (soft-float /lib/ld-linux.so.3)
 set -euo pipefail
 cd "$(dirname "$0")"
+
+PKG_PATH=Examples
+APPS=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -p|--package-path) PKG_PATH="$2"; shift 2 ;;
+    -h|--help) sed -n '2,13p' "$0"; exit 0 ;;
+    *) APPS+=("$1"); shift ;;
+  esac
+done
+[ -f "$PKG_PATH/Package.swift" ] || { echo "no $PKG_PATH/Package.swift"; exit 1; }
+if [ ${#APPS[@]} -eq 0 ]; then
+  # Auto-discover executable products of the package.
+  APPS=($(swift package --package-path "$PKG_PATH" describe --type json | python3 -c \
+    "import json,sys; print(' '.join(t['name'] for t in json.load(sys.stdin)['targets'] if t['type']=='executable'))"))
+fi
+[ ${#APPS[@]} -gt 0 ] || { echo "no executable products found in $PKG_PATH"; exit 1; }
+APPS_STR="${APPS[*]}"
+echo "Building: $APPS_STR (package: $PKG_PATH)"
 
 IMAGE=swift-armv7-kindle
 
@@ -15,12 +37,12 @@ docker build -t "$IMAGE" .
 
 # Use a docker volume for the build dir so macOS bind mounts don't slow SwiftPM down.
 # Note:
-# 1. KindleShowcase & KindleWiki use KindleUI (CKindleGTK), which dlopen()s libgtk-x11-2.0.so.0 and liblipc.so.
+# 1. Apps use KindleUI (CKindleGTK), which dlopen()s libgtk-x11-2.0.so.0 and liblipc.so.
 # 2. KindleUI uses Swift's native URLSession (FoundationNetworking), which links against libcurl.so.4.
 #    Ubuntu Jammy's libcurl.so.4 tags symbols with @CURL_OPENSSL_4, whereas Kindle OS's Yocto
 #    /usr/lib/libcurl.so.4 exports unversioned symbols. Replacing the SDK's link-time libcurl.so
 #    with an unversioned stub lets URLSession link cleanly against Kindle OS's /usr/lib/libcurl.so.4.
-# 3. For soft-float (KindleShowcase-softfp / KindleWiki-softfp):
+# 3. For soft-float (<APP>-softfp):
 #    - CKindleGTK.c is compiled with -DKINDLE_SOFTFP=1 (__attribute__((pcs("aapcs")))) so all
 #      GTK+-2.0 / GDK / Cairo float/double calls use soft-float registers (r0-r3).
 #    - libm.a is linked statically (replacing libm.so) and libc's strtod/strtof family are bridged
@@ -28,6 +50,7 @@ docker build -t "$IMAGE" .
 #    - ELF interpreter and DT_NEEDED loader are set to /lib/ld-linux.so.3 (ld-linux.so.3), and
 #      e_flags patched to EF_ARM_ABI_FLOAT_SOFT (0x5000200).
 docker run --rm \
+  -e PKG_PATH="$PKG_PATH" -e APPS="$APPS_STR" \
   -v "$PWD":/src \
   -v swift-armv7-build:/build \
   "$IMAGE" bash -euc '
@@ -377,8 +400,8 @@ EOF
 
     # 1. Build hard-float (armhf) binaries (compatible with glibc >= 2.20)
     rm -rf /build/armv7-unknown-linux-gnueabihf/release/CKindleGTK.build
-    rm -f /build/release/KindleShowcase /build/release/KindleWiki
-    swift build -c release --package-path /src/Examples \
+    for a in $APPS; do rm -f "/build/release/$a"; done
+    swift build -c release --package-path "/src/$PKG_PATH" \
       --scratch-path /build \
       --destination "$SDK_DIR/ubuntu-jammy-static.json" \
       --static-swift-stdlib \
@@ -391,7 +414,7 @@ EOF
       -Xlinker --as-needed \
       -Xlinker --wrap=__libc_start_main \
       -Xlinker --strip-all
-    for app in KindleShowcase KindleWiki; do
+    for app in $APPS; do
       cp /build/release/$app /src/dist/$app
     done
 
@@ -484,8 +507,8 @@ EOF
     sed "s|/lib/ld-linux-armhf.so.3|/lib/ld-linux.so.3|g" /tmp/libc.so.bak > "$LIBDIR/libc.so"
 
     rm -rf /build/armv7-unknown-linux-gnueabihf/release/CKindleGTK.build
-    rm -f /build/release/KindleShowcase /build/release/KindleWiki
-    swift build -c release --package-path /src/Examples \
+    for a in $APPS; do rm -f "/build/release/$a"; done
+    swift build -c release --package-path "/src/$PKG_PATH" \
       --scratch-path /build \
       --destination "$SDK_DIR/ubuntu-jammy-static.json" \
       --static-swift-stdlib \
@@ -517,7 +540,7 @@ EOF
     rm -f "$LIBDIR/libm.so"
     ln -s /lib/arm-linux-gnueabihf/libm.so.6 "$LIBDIR/libm.so"
 
-    for app in KindleShowcase KindleWiki; do
+    for app in $APPS; do
       llvm-objcopy --remove-section=.ARM.attributes /build/release/$app
       # Patch ELF e_flags (offset 36 in little-endian 32-bit ELF header):
       # Clear EF_ARM_ABI_FLOAT_HARD (0x400) and set EF_ARM_ABI_FLOAT_SOFT (0x200).
@@ -532,11 +555,13 @@ with open(\"/build/release/$app\", \"r+b\") as f:
       cp /build/release/$app /src/dist/${app}-softfp
     done
 
-    for bin in /src/dist/KindleShowcase /src/dist/KindleWiki /src/dist/KindleShowcase-softfp /src/dist/KindleWiki-softfp; do
-      file "$bin" || true
-      ls -lh "$bin" || true
+    for app in $APPS; do
+      for bin in "/src/dist/$app" "/src/dist/$app-softfp"; do
+        file "$bin" || true
+        ls -lh "$bin" || true
+      done
     done
   '
 
 echo
-echo "Built: dist/KindleShowcase dist/KindleWiki dist/KindleShowcase-softfp dist/KindleWiki-softfp"
+echo "Built: $(for a in $APPS_STR; do printf "dist/%s dist/%s-softfp " "$a" "$a"; done)"

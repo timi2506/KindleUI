@@ -63,7 +63,7 @@ public final class WebViewController: @unchecked Sendable {
         historyIndex = historyStack.count - 1
     }
 
-    /// Loads a URL via the built-in TLS 1.3 WebKit proxy so HTML, external CSS stylesheets, and images load cleanly.
+    /// Loads a URL directly in the WebKitGTK webview.
     public func load(url newURL: String, viaModernTLS: Bool = false) {
         let trimmed = newURL.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
