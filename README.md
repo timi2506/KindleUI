@@ -17,7 +17,7 @@
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/<you>/KindleUI", from: "1.0.0")
+    .package(url: "https://github.com/timi2506/KindleUI", from: "1.0.0")
 ],
 targets: [
     .executableTarget(name: "MyApp", dependencies: [
