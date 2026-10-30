@@ -2,47 +2,31 @@
 import PackageDescription
 
 let package = Package(
-    name: "KindleSwift",
+    name: "KindleUI",
     platforms: [
-        .macOS(.v13)
+        .macOS(.v14)
     ],
     products: [
-        .library(
-            name: "KindleUI",
-            targets: ["KindleUI"]
-        ),
-        .executable(
-            name: "kindle-swift",
-            targets: ["KindleSwiftCLI"]
-        ),
-        .executable(
-            name: "KindleNotesDemo",
-            targets: ["KindleNotesDemo"]
-        )
+        .library(name: "KindleUI", targets: ["KindleUI"])
     ],
     targets: [
+        // C bridge to GTK+-2.0 / Cairo / Pango / LIPC. SwiftPM cannot mix C and Swift in one
+        // target, so this is a separate, internal target (not exported as a product).
         .target(
             name: "CKindleGTK",
-            path: "Sources/CKindleGTK",
-            publicHeadersPath: "include",
-            linkerSettings: [
-                .linkedLibrary("dl", .when(platforms: [.linux]))
-            ]
+            path: "Sources/KindleUI/CKindleGTK",
+            publicHeadersPath: "include"
         ),
         .target(
             name: "KindleUI",
             dependencies: ["CKindleGTK"],
-            path: "Sources/KindleUI"
+            path: "Sources/KindleUI",
+            exclude: ["CKindleGTK"]
         ),
-        .executableTarget(
-            name: "KindleSwiftCLI",
+        .testTarget(
+            name: "KindleUITests",
             dependencies: ["KindleUI"],
-            path: "Sources/KindleSwiftCLI"
-        ),
-        .executableTarget(
-            name: "KindleNotesDemo",
-            dependencies: ["KindleUI"],
-            path: "Sources/KindleNotesDemo"
+            path: "Tests/KindleUITests"
         )
     ]
 )
