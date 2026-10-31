@@ -99,7 +99,6 @@ void kgtk_scrolled_window_set_show_indicators(KWidgetRef scrolled_window, bool s
 KWidgetRef kgtk_frozen_scrolled_view_new(uint8_t bg_gray);
 void kgtk_frozen_scrolled_view_add(KWidgetRef frozen_view, KWidgetRef child);
 KWidgetRef kgtk_nowindow_canvas_new(void);
-KWidgetRef kgtk_event_box_new(void);
 KWidgetRef kgtk_zstack_new(void);
 void kgtk_zstack_add(KWidgetRef zstack, KWidgetRef child);
 void kgtk_widget_set_sensitive(KWidgetRef widget, bool sensitive);
@@ -271,7 +270,6 @@ void kgtk_webview_submit_input(const char* view_id);
 
 // --- Interactive E-Ink Drawing Canvas (GtkDrawingArea) ---
 KWidgetRef kgtk_drawing_area_new(void);
-void kgtk_widget_get_size(KWidgetRef widget, int* out_width, int* out_height);
 void kgtk_widget_queue_draw_rect(KWidgetRef widget, int x, int y, int width, int height);
 void kgtk_draw_gray_pixels(KWidgetRef widget, const uint8_t* pixels, int width, int height, int stride);
 void kgtk_drawing_area_connect(
@@ -287,7 +285,6 @@ void kgtk_widget_show_all(KWidgetRef widget);
 void kgtk_widget_queue_draw(KWidgetRef widget);
 void kgtk_widget_modify_bg_gray(KWidgetRef widget, int state, uint8_t gray_level);
 void kgtk_widget_modify_fg_gray(KWidgetRef widget, int state, uint8_t gray_level);
-void kgtk_widget_modify_font_string(KWidgetRef widget, const char* font_desc_str);
 void kgtk_widget_set_font_and_fg(KWidgetRef widget, const char* font_desc_str, bool has_fg, uint8_t fg_gray);
 
 // --- Signals ---

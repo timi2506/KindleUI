@@ -90,8 +90,6 @@ static KGlobalScrollDrag g_scroll_drag = { NULL, NULL, false, false, 0.0, 0.0, 0
 typedef int (KGTK_ABI *fn_gtk_init_check)(int*, char***);
 typedef void (KGTK_ABI *fn_gtk_main)(void);
 typedef void (KGTK_ABI *fn_gtk_main_quit)(void);
-typedef int (KGTK_ABI *fn_gtk_events_pending)(void);
-typedef int (KGTK_ABI *fn_gtk_main_iteration_do)(int);
 typedef unsigned int (KGTK_ABI *fn_g_idle_add)(int (*)(void*), void*);
 typedef unsigned int (KGTK_ABI *fn_g_idle_add_full)(int, int (*)(void*), void*, void (*)(void*));
 
@@ -99,14 +97,12 @@ typedef KWidgetRef (KGTK_ABI *fn_gtk_window_new)(int);
 typedef void (KGTK_ABI *fn_gtk_window_set_title)(KWidgetRef, const char*);
 typedef void (KGTK_ABI *fn_gtk_window_set_default_size)(KWidgetRef, int, int);
 typedef void (KGTK_ABI *fn_gtk_window_set_position)(KWidgetRef, int);
-typedef void (KGTK_ABI *fn_gtk_window_fullscreen)(KWidgetRef);
 
 typedef KWidgetRef (KGTK_ABI *fn_gtk_box_new_2)(int, int);
 typedef void (KGTK_ABI *fn_gtk_box_pack_start)(KWidgetRef, KWidgetRef, int, int, unsigned int);
 typedef void (KGTK_ABI *fn_gtk_container_add)(KWidgetRef, KWidgetRef);
 typedef void (KGTK_ABI *fn_gtk_container_remove)(KWidgetRef, KWidgetRef);
 typedef KGList* (KGTK_ABI *fn_gtk_container_get_children)(KWidgetRef);
-typedef void (KGTK_ABI *fn_gtk_container_set_border_width)(KWidgetRef, unsigned int);
 typedef void (KGTK_ABI *fn_gtk_container_check_resize)(KWidgetRef);
 typedef void (KGTK_ABI *fn_gtk_widget_size_allocate)(KWidgetRef, KGtkAllocation*);
 typedef void (KGTK_ABI *fn_gtk_container_propagate_expose)(KWidgetRef, KWidgetRef, void*);
@@ -123,9 +119,6 @@ typedef void (KGTK_ABI *fn_g_list_free)(KGList*);
 
 typedef KWidgetRef (KGTK_ABI *fn_gtk_alignment_new)(float, float, float, float);
 typedef void (KGTK_ABI *fn_gtk_alignment_set_padding)(KWidgetRef, unsigned int, unsigned int, unsigned int, unsigned int);
-typedef KWidgetRef (KGTK_ABI *fn_gtk_frame_new)(const char*);
-typedef void (KGTK_ABI *fn_gtk_frame_set_shadow_type)(KWidgetRef, int);
-typedef KWidgetRef (KGTK_ABI *fn_gtk_frame_get_label_widget)(KWidgetRef);
 typedef KWidgetRef (KGTK_ABI *fn_gtk_bin_get_child)(KWidgetRef);
 typedef KWidgetRef (KGTK_ABI *fn_gtk_scrolled_window_new)(void*, void*);
 typedef void (KGTK_ABI *fn_gtk_scrolled_window_set_policy)(KWidgetRef, int, int);
@@ -152,26 +145,10 @@ typedef void (KGTK_ABI *fn_gtk_label_set_line_wrap)(KWidgetRef, int);
 typedef void (KGTK_ABI *fn_gtk_label_set_justify)(KWidgetRef, int);
 typedef void (KGTK_ABI *fn_gtk_misc_set_alignment)(KWidgetRef, float, float);
 
-typedef KWidgetRef (KGTK_ABI *fn_gtk_button_new_with_label)(const char*);
-typedef void (KGTK_ABI *fn_gtk_button_set_label)(KWidgetRef, const char*);
-
-typedef KWidgetRef (KGTK_ABI *fn_gtk_check_button_new_with_label)(const char*);
-typedef int (KGTK_ABI *fn_gtk_toggle_button_get_active)(KWidgetRef);
-typedef void (KGTK_ABI *fn_gtk_toggle_button_set_active)(KWidgetRef, int);
-
 typedef KWidgetRef (KGTK_ABI *fn_gtk_entry_new)(void);
 typedef void (KGTK_ABI *fn_gtk_entry_set_text)(KWidgetRef, const char*);
 typedef const char* (KGTK_ABI *fn_gtk_entry_get_text)(KWidgetRef);
 
-typedef KWidgetRef (KGTK_ABI *fn_gtk_progress_bar_new)(void);
-typedef void (KGTK_ABI *fn_gtk_progress_bar_set_fraction)(KWidgetRef, double);
-typedef void (KGTK_ABI *fn_gtk_progress_bar_set_text)(KWidgetRef, const char*);
-
-typedef KWidgetRef (KGTK_ABI *fn_gtk_hscale_new_with_range)(double, double, double);
-typedef double (KGTK_ABI *fn_gtk_range_get_value)(KWidgetRef);
-typedef void (KGTK_ABI *fn_gtk_range_set_value)(KWidgetRef, double);
-
-typedef KWidgetRef (KGTK_ABI *fn_gtk_separator_new)(void);
 typedef KWidgetRef (KGTK_ABI *fn_gtk_image_new_from_file)(const char*);
 
 typedef KWidgetRef (KGTK_ABI *fn_gtk_drawing_area_new)(void);
@@ -205,13 +182,10 @@ typedef void (KGTK_ABI *fn_cairo_line_to)(void*, double, double);
 typedef void (KGTK_ABI *fn_cairo_arc)(void*, double, double, double, double, double);
 typedef void (KGTK_ABI *fn_cairo_rectangle)(void*, double, double, double, double);
 typedef void (KGTK_ABI *fn_cairo_fill)(void*);
-typedef void (KGTK_ABI *fn_cairo_fill_preserve)(void*);
 typedef void (KGTK_ABI *fn_cairo_stroke)(void*);
 
 typedef void (*fn_gtk_widget_set_size_request)(KWidgetRef, int, int);
-typedef void (*fn_gtk_widget_show)(KWidgetRef);
 typedef void (*fn_gtk_widget_show_all)(KWidgetRef);
-typedef void (*fn_gtk_widget_hide)(KWidgetRef);
 typedef void (*fn_gtk_widget_destroy)(KWidgetRef);
 typedef void (*fn_gtk_widget_queue_draw)(KWidgetRef);
 typedef void (*fn_gtk_widget_modify_bg)(KWidgetRef, int, const KGdkColor*);
@@ -227,8 +201,6 @@ typedef unsigned long (*fn_g_signal_connect_data)(void*, const char*, void*, voi
 typedef void (*fn_g_object_set_data_full)(void*, const char*, void*, void (*)(void*));
 typedef void* (*fn_g_object_get_data)(void*, const char*);
 typedef void (*fn_g_object_unref)(void*);
-typedef unsigned long (*fn_gtk_type_Fn)(void);
-typedef int (*fn_g_type_check_instance_is_a)(void*, unsigned long);
 
 // LIPC functions on Kindle
 typedef void* (*fn_LipcOpenNoName)(void);
@@ -1328,6 +1300,12 @@ static int c_frozen_scroll_expose(KWidgetRef widget, void* event, void* data) {
     return 1;
 }
 
+static KWidgetRef kgtk_event_box_new(void) {
+    fn_gtk_event_box_new fn = (fn_gtk_event_box_new)resolve_sym("gtk_event_box_new");
+    if (fn) return fn();
+    return NULL;
+}
+
 KWidgetRef kgtk_frozen_scrolled_view_new(uint8_t bg_gray) {
     double saved_y = g_pending_scroll_restore > 0.0 ? g_pending_scroll_restore : g_last_scroll_y;
     g_pending_scroll_restore = saved_y;
@@ -1480,12 +1458,6 @@ void kgtk_scrolled_window_add_with_viewport(KWidgetRef scrolled_window, KWidgetR
             }
         }
     }
-}
-
-KWidgetRef kgtk_event_box_new(void) {
-    fn_gtk_event_box_new fn = (fn_gtk_event_box_new)resolve_sym("gtk_event_box_new");
-    if (fn) return fn();
-    return NULL;
 }
 
 static void c_zstack_clamp_size_request(KWidgetRef widget, KGtkRequisition* req, void* data) {
@@ -1794,7 +1766,7 @@ KWidgetRef kgtk_nowindow_canvas_new(void) {
 static KGtkAllocation g_canvas_expose_area = { 0, 0, 0, 0 };
 static bool g_has_canvas_expose_area = false;
 
-void kgtk_widget_get_size(KWidgetRef widget, int* out_width, int* out_height) {
+static void kgtk_widget_get_size(KWidgetRef widget, int* out_width, int* out_height) {
     int w = 0, h = 0;
     fn_gtk_widget_get_allocation get_alloc = (fn_gtk_widget_get_allocation)resolve_sym("gtk_widget_get_allocation");
     if (get_alloc && widget) {
@@ -2236,21 +2208,6 @@ void kgtk_widget_modify_fg_gray(KWidgetRef widget, int state, uint8_t gray_level
         KGdkColor color = { 0, c16, c16, c16 };
         fn(widget, state, &color);
     }
-}
-
-void kgtk_widget_modify_font_string(KWidgetRef widget, const char* font_desc_str) {
-    if (!widget || !font_desc_str) return;
-    uint32_t font_idx = 63u;
-    void* desc = kgtk_lookup_or_create_font_desc(font_desc_str, &font_idx);
-    if (!desc) return;
-    if (font_idx < 63u) {
-        uint32_t old_key = kgtk_get_widget_rc_key(widget);
-        uint32_t new_key = (old_key & ~0x3Fu) | (font_idx & 0x3Fu);
-        kgtk_apply_rc_style_key(widget, new_key, old_key);
-        return;
-    }
-    fn_gtk_widget_modify_font modify_fn = (fn_gtk_widget_modify_font)resolve_sym("gtk_widget_modify_font");
-    if (modify_fn) modify_fn(widget, desc);
 }
 
 void kgtk_widget_set_font_and_fg(KWidgetRef widget, const char* font_desc_str, bool has_fg, uint8_t fg_gray) {
@@ -2867,10 +2824,6 @@ static int c_styled_box_expose(KWidgetRef widget, void* event, void* data) {
 
     g_cairo.destroy(cr);
     return 0; // Let GtkContainer propagate expose to children on top
-}
-
-static KWidgetRef c_current_draggable_scroll_window(void) {
-    return g_active_modal_scrolled_window ? g_active_modal_scrolled_window : g_active_scrolled_window;
 }
 
 static int c_styled_button_press(KWidgetRef widget, void* event, void* data) {
@@ -3624,10 +3577,7 @@ KWidgetRef kgtk_text_editor_new(
     if (min_height > 0) {
         kgtk_widget_set_size_request(tv, -1, min_height);
     }
-    if (font_desc) {
-        kgtk_widget_modify_font_string(tv, font_desc);
-    }
-    kgtk_widget_modify_fg_gray(tv, 0, fg_gray);
+    kgtk_widget_set_font_and_fg(tv, font_desc, true, fg_gray);
     kgtk_widget_modify_bg_gray(tv, 0, bg_gray);
 
     void* buf = get_buf(tv);
@@ -3785,7 +3735,6 @@ typedef void (KGTK_ABI *fn_webkit_web_view_go_forward)(KWidgetRef);
 typedef int (KGTK_ABI *fn_webkit_web_view_can_go_back)(KWidgetRef);
 typedef int (KGTK_ABI *fn_webkit_web_view_can_go_forward)(KWidgetRef);
 typedef void (KGTK_ABI *fn_webkit_web_view_set_zoom_level)(KWidgetRef, float);
-typedef float (KGTK_ABI *fn_webkit_web_view_get_zoom_level)(KWidgetRef);
 typedef void (KGTK_ABI *fn_webkit_web_view_set_full_content_zoom)(KWidgetRef, int);
 typedef void (KGTK_ABI *fn_webkit_web_view_execute_script)(KWidgetRef, const char*);
 typedef const char* (KGTK_ABI *fn_webkit_web_view_get_title)(KWidgetRef);
