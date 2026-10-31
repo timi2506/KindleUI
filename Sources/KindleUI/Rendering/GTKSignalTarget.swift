@@ -26,7 +26,6 @@ internal struct FileStamp: Equatable {
 internal final class GTKSignalTarget {
     enum Handler {
         case tap(() -> Void)
-        case toggle((Bool) -> Void)
         case textChange((String) -> Void)
         case textEditorChange((String) -> Void)
         case sliderChange((Double) -> Void)
@@ -67,22 +66,6 @@ internal func gtkClickedTrampoline(widget: KWidgetRef?, userData: UnsafeMutableR
             let kbWasVisible = KindleKeyboardManager.shared.isVisible
             let genBefore = KindleKeyboardManager.shared.interactionGeneration
             action()
-            if kbWasVisible && KindleKeyboardManager.shared.isVisible && KindleKeyboardManager.shared.interactionGeneration == genBefore {
-                KindleKeyboardManager.shared.dismiss()
-            }
-        }
-    }
-}
-
-internal func gtkToggledTrampoline(widget: KWidgetRef?, userData: UnsafeMutableRawPointer?) {
-    guard let widget = widget, let userData = userData else { return }
-    let target = Unmanaged<GTKSignalTarget>.fromOpaque(userData).takeUnretainedValue()
-    withExtendedLifetime(target) {
-        if case .toggle(let onToggle) = target.handler {
-            let kbWasVisible = KindleKeyboardManager.shared.isVisible
-            let genBefore = KindleKeyboardManager.shared.interactionGeneration
-            let isActive = kgtk_toggle_button_get_active(widget)
-            onToggle(isActive)
             if kbWasVisible && KindleKeyboardManager.shared.isVisible && KindleKeyboardManager.shared.interactionGeneration == genBefore {
                 KindleKeyboardManager.shared.dismiss()
             }

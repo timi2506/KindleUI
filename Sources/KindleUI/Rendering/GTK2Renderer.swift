@@ -18,7 +18,7 @@ public final class GTK2Renderer: @unchecked Sendable {
     internal var mountedImageStamps: [(path: String, stamp: FileStamp)] = []
     internal var mountedWindowTitle: String?
     internal var mountedLabels: [(widget: KWidgetRef, text: String, markup: String?, fgGray: UInt8)] = []
-    internal var mountedProgressBars: [(barWidget: KWidgetRef, labelWidget: KWidgetRef?, fraction: Double, text: String?)] = []
+    internal var mountedProgressBars: [(barWidget: KWidgetRef, barTarget: GTKCairoTarget, labelWidget: KWidgetRef?, fraction: Double, text: String?)] = []
     internal let makeTree: () -> RenderNode
     internal let defaultConfig: KindleWindowConfig
     internal var isRebuilding: Bool = false
@@ -173,7 +173,15 @@ public final class GTK2Renderer: @unchecked Sendable {
                 let (newFrac, newTxt) = progressBars[i]
                 if abs(newFrac - mountedProgressBars[i].fraction) > 0.0001 {
                     mountedProgressBars[i].fraction = newFrac
-                    kgtk_custom_progress_set_fraction(mountedProgressBars[i].barWidget, newFrac)
+                    if case .progressBar(_, let fg, let bg, let track) = mountedProgressBars[i].barTarget.kind {
+                        mountedProgressBars[i].barTarget.kind = .progressBar(
+                            fraction: min(1.0, max(0.0, newFrac)),
+                            fgGray: fg,
+                            bgGray: bg,
+                            trackGray: track
+                        )
+                    }
+                    kgtk_widget_queue_draw(mountedProgressBars[i].barWidget)
                     didMutate = true
                 }
                 if newTxt != mountedProgressBars[i].text,
@@ -296,11 +304,11 @@ public final class GTK2Renderer: @unchecked Sendable {
 
         let rootBg = extractRootBackground(from: updatedTree) ?? KindleTheme.current.background
         kgtk_window_freeze_updates(window)
-        kgtk_widget_modify_bg_gray(window, 0, rootBg.grayLevel)
-        kgtk_widget_modify_bg_gray(rootContainer, 0, rootBg.grayLevel)
 
         _ = kgtk_take_suppressed_redraw_widget() // about to be destroyed
         kgtk_container_clear(rootContainer)
+        kgtk_widget_modify_bg_gray(window, 0, rootBg.grayLevel)
+        kgtk_widget_modify_bg_gray(rootContainer, 0, rootBg.grayLevel)
         activeSignalTargets.removeAll(keepingCapacity: true)
         activeTargetPaths.removeAll(keepingCapacity: true)
 
@@ -353,6 +361,7 @@ public final class GTK2Renderer: @unchecked Sendable {
         guard retargetHandlers(to: tree) else { return false }
         mountedTree = tree
 
+        kgtk_window_freeze_updates(window)
         var didMutate = false
         for i in 0..<texts.count {
             let (newText, newMarkup) = texts[i]
@@ -370,7 +379,15 @@ public final class GTK2Renderer: @unchecked Sendable {
             let (newFraction, newText) = bars[i]
             if abs(newFraction - mountedProgressBars[i].fraction) > 0.0001 {
                 mountedProgressBars[i].fraction = newFraction
-                kgtk_custom_progress_set_fraction(mountedProgressBars[i].barWidget, newFraction)
+                if case .progressBar(_, let fg, let bg, let track) = mountedProgressBars[i].barTarget.kind {
+                    mountedProgressBars[i].barTarget.kind = .progressBar(
+                        fraction: min(1.0, max(0.0, newFraction)),
+                        fgGray: fg,
+                        bgGray: bg,
+                        trackGray: track
+                    )
+                }
+                kgtk_widget_queue_draw(mountedProgressBars[i].barWidget)
                 didMutate = true
             }
             if let label = mountedProgressBars[i].labelWidget,
@@ -388,7 +405,12 @@ public final class GTK2Renderer: @unchecked Sendable {
             kgtk_widget_queue_draw(deferredRedraw)
         }
         if didMutate || deferredRedraw != nil {
+            if didMutate {
+                kgtk_widget_queue_draw(window)
+            }
             kgtk_flush_live_drag(window)
+        } else {
+            kgtk_window_thaw_updates(window)
         }
         if didMutate {
             KindleDevice.shared.performAutomaticRefresh()
@@ -470,6 +492,7 @@ public final class GTK2Renderer: @unchecked Sendable {
             isDisabled: false
         )
         if let childWidget = buildWidget(for: effectiveTree, context: initialContext) {
+            kgtk_widget_show_all(childWidget)
             kgtk_box_pack_start(rootContainer, childWidget, true, true, 0)
         }
         mountedTree = effectiveTree
@@ -590,14 +613,14 @@ public final class GTK2Renderer: @unchecked Sendable {
 
                 if style.hasModalScrim {
                     kgtk_widget_set_sensitive(builtWidgets[0].0, false)
-                    if let scrim = kgtk_modal_scrim_new(
-                        builtWidgets[1].0,
-                        theme.background.grayLevel,
-                        0.78,
-                        Double(hAlign),
-                        Double(vAlign),
-                        xscale,
-                        yscale
+                    if let scrim = buildCairoModalScrim(
+                        child: builtWidgets[1].0,
+                        bgGray: theme.background.grayLevel,
+                        alpha: 0.78,
+                        xalign: hAlign,
+                        yalign: vAlign,
+                        xscale: Float(xscale),
+                        yscale: Float(yscale)
                     ) {
                         builtWidgets[1].0 = scrim
                     }
@@ -690,9 +713,8 @@ public final class GTK2Renderer: @unchecked Sendable {
                     kgtk_label_set_line_wrap(lbl, false)
                     kgtk_misc_set_alignment(lbl, 0.0, 0.5)
                     KindleFont.system(size: 14, weight: .bold).pangoDescription.withCString {
-                        kgtk_widget_modify_font_string(lbl, $0)
+                        kgtk_widget_set_font_and_fg(lbl, $0, true, theme.mutedForeground.grayLevel)
                     }
-                    kgtk_widget_modify_fg_gray(lbl, 0, theme.mutedForeground.grayLevel)
                     if let vbox = vbox {
                         kgtk_box_pack_start(vbox, lbl, false, true, 0)
                     }
@@ -726,7 +748,7 @@ public final class GTK2Renderer: @unchecked Sendable {
             case .center:   justify = 2 // GTK_JUSTIFY_CENTER
             }
             kgtk_label_set_justify(label, justify)
-            return applyStyle(style, to: label, context: context)
+            return applyStyle(style, to: label, context: context, applyTextStyle: true)
 
         case .button(let label, let customChild, let action, let style):
             return buildStyledButton(
@@ -761,7 +783,7 @@ public final class GTK2Renderer: @unchecked Sendable {
                 if boxStyle.contentPadding == nil {
                     boxStyle.contentPadding = EdgeInsets(top: 10, leading: 14, bottom: 10, trailing: 14)
                 }
-                return applyStyle(boxStyle, to: lbl, context: context)
+                return applyStyle(boxStyle, to: lbl, context: context, applyTextStyle: true)
             }
             guard let entry = kgtk_entry_new() else { return nil }
             displayVal.withCString { kgtk_entry_set_text(entry, $0) }
@@ -771,7 +793,7 @@ public final class GTK2Renderer: @unchecked Sendable {
             _ = "activate".withCString { sig in
                 kgtk_signal_connect(entry, sig, gtkEntryActivateTrampoline, ptr)
             }
-            return applyStyle(style, to: entry, context: context)
+            return applyStyle(style, to: entry, context: context, applyTextStyle: true)
 
         case .textEditor(let text, let minHeight, let onTextChange, let style):
             var editorStyle = style
@@ -786,7 +808,7 @@ public final class GTK2Renderer: @unchecked Sendable {
                 kgtk_label_set_line_wrap(lbl, true)
                 kgtk_misc_set_alignment(lbl, 0.0, 0.0)
                 if editorStyle.height == nil { editorStyle.height = minHeight }
-                return applyStyle(editorStyle, to: lbl, context: context)
+                return applyStyle(editorStyle, to: lbl, context: context, applyTextStyle: true)
             }
             let fg = (style.foregroundColor ?? context.fg ?? theme.foreground).grayLevel
             let bg = (style.backgroundColor ?? theme.cardBackground).grayLevel
@@ -839,7 +861,13 @@ public final class GTK2Renderer: @unchecked Sendable {
             let bg = (style.backgroundColor ?? context.bg).grayLevel
             let track = (bg == theme.panelBackground.grayLevel) ? theme.subtleBorder.grayLevel : theme.panelBackground.grayLevel
             let barHeight = style.height ?? 16
-            guard let pbar = kgtk_custom_progress_new(fraction, fg, bg, track, Int32(barHeight)) else {
+            guard let (pbar, pbarTarget) = buildCairoProgressBar(
+                fraction: fraction,
+                fgGray: fg,
+                bgGray: bg,
+                trackGray: track,
+                height: barHeight
+            ) else {
                 return nil
             }
             if let text = text, !text.isEmpty, let vbox = kgtk_vbox_new(false, 8) {
@@ -849,23 +877,22 @@ public final class GTK2Renderer: @unchecked Sendable {
                     kgtk_label_set_line_wrap(lbl, false)
                     kgtk_misc_set_alignment(lbl, 0.0, 0.5)
                     let f = style.font ?? context.font ?? .caption
-                    f.pangoDescription.withCString { kgtk_widget_modify_font_string(lbl, $0) }
-                    kgtk_widget_modify_fg_gray(lbl, 0, fg)
+                    f.pangoDescription.withCString { kgtk_widget_set_font_and_fg(lbl, $0, true, fg) }
                     kgtk_box_pack_start(vbox, lbl, false, true, 0)
                 }
-                mountedProgressBars.append((barWidget: pbar, labelWidget: headerLbl, fraction: fraction, text: text))
+                mountedProgressBars.append((barWidget: pbar, barTarget: pbarTarget, labelWidget: headerLbl, fraction: fraction, text: text))
                 kgtk_box_pack_start(vbox, pbar, false, true, 0)
                 style.height = nil
                 return applyStyle(style, to: vbox, context: context)
             }
             style.height = barHeight
-            mountedProgressBars.append((barWidget: pbar, labelWidget: nil, fraction: fraction, text: nil))
+            mountedProgressBars.append((barWidget: pbar, barTarget: pbarTarget, labelWidget: nil, fraction: fraction, text: nil))
             return applyStyle(style, to: pbar, context: context)
 
         case .divider(let vertical, let style):
             let thickness = vertical ? (style.width ?? 2) : (style.height ?? 2)
             let gray = context.blend(style.foregroundColor ?? theme.subtleBorder, localOpacity: style.opacity).grayLevel
-            guard let sep = kgtk_custom_divider_new(vertical, Int32(thickness), gray) else { return nil }
+            guard let sep = buildCairoDivider(vertical: vertical, thickness: thickness, grayLevel: gray) else { return nil }
             return applyStyle(style, to: sep, context: context)
 
         case .spacer(let minLength, let style):
@@ -888,7 +915,7 @@ public final class GTK2Renderer: @unchecked Sendable {
         case .icon(let icon, let size, let style):
             let bg = (style.backgroundColor.map { context.blend($0, localOpacity: style.opacity) } ?? context.bg).grayLevel
             let fg = context.blend(style.foregroundColor ?? context.fg ?? theme.foreground, localOpacity: style.opacity).grayLevel
-            guard let ic = kgtk_custom_icon_new(icon.rawValue, Int32(size), fg, bg, style.backgroundColor != nil) else {
+            guard let ic = buildCairoIcon(icon: icon, size: size, fgGray: fg, bgGray: bg, hasBg: style.backgroundColor != nil) else {
                 return nil
             }
             return applyStyle(style, to: ic, context: context)

@@ -6,7 +6,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#if !defined(_WIN32)
 #include <dlfcn.h>
 #include <pthread.h>
 #include <unistd.h>
@@ -15,7 +14,6 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
-#endif
 
 typedef struct {
     uint32_t pixel;
@@ -42,7 +40,6 @@ typedef struct {
     int height;
 } KGtkRequisition;
 
-#if !defined(_WIN32)
 static void* g_gtk_lib = NULL;
 static void* g_gdk_lib = NULL;
 static void* g_gobj_lib = NULL;
@@ -269,19 +266,16 @@ static void* resolve_sym(const char* name) {
     uint32_t hash = sym_name_hash(name);
     uint32_t mask = KGTK_SYM_CACHE_SIZE - 1;
 
-    pthread_mutex_lock(&g_sym_cache_mutex);
     uint32_t idx = hash & mask;
     for (uint32_t probes = 0; probes < KGTK_SYM_CACHE_SIZE; ++probes) {
         KSymCacheEntry* e = &g_sym_cache[idx];
-        if (!e->name) break;
-        if (strcmp(e->name, name) == 0) {
-            void* cached = e->sym;
-            pthread_mutex_unlock(&g_sym_cache_mutex);
-            return cached;
+        const char* existing = __atomic_load_n(&e->name, __ATOMIC_ACQUIRE);
+        if (!existing) break;
+        if (strcmp(existing, name) == 0) {
+            return e->sym;
         }
         idx = (idx + 1) & mask;
     }
-    pthread_mutex_unlock(&g_sym_cache_mutex);
 
     void* sym = resolve_sym_uncached(name);
     if (!sym) return NULL;
@@ -294,7 +288,7 @@ static void* resolve_sym(const char* name) {
             char* copy = strdup(name);
             if (copy) {
                 e->sym = sym;
-                e->name = copy;
+                __atomic_store_n(&e->name, copy, __ATOMIC_RELEASE);
             }
             break;
         }
@@ -317,12 +311,8 @@ static void* resolve_sym_uncached(const char* name) {
     if (g_pango_lib && (sym = dlsym(g_pango_lib, name))) return sym;
     return dlsym(RTLD_DEFAULT, name);
 }
-#endif
 
 bool kgtk_init(void) {
-#if defined(_WIN32)
-    return false;
-#else
     const char* gtk_candidates[] = {
         "libgtk-x11-2.0.so.0",
         "libgtk-x11-2.0.so",
@@ -375,10 +365,8 @@ bool kgtk_init(void) {
         return false;
     }
     return true;
-#endif
 }
 
-#if !defined(_WIN32)
 typedef struct _KIdleTask {
     KIdleCallback callback;
     void* user_data;
@@ -394,98 +382,65 @@ static KIdleTask* g_idle_head = NULL;
 static KIdleTask* g_idle_tail = NULL;
 static volatile int g_has_pending_idle = 0;
 static int g_draining_idle_tasks = 0;
-static int g_idle_pump_registered = 0;
 
 static void kgtk_drain_idle_tasks(void) {
     if (g_draining_idle_tasks) {
-        // Prevent re-entrant draining when kgtk_flush_updates() pumps gtk_main_iteration_do(0)
-        // in the middle of a UI rebuild; the outer loop will continue draining queued tasks.
+        // Prevent re-entrant draining; the active outer loop will pick up newly queued tasks.
         return;
     }
     g_draining_idle_tasks = 1;
 
-    pthread_mutex_lock(&g_idle_mutex);
-    KIdleTask* list = g_idle_head;
-    g_idle_head = NULL;
-    g_idle_tail = NULL;
-    g_has_pending_idle = 0;
-    pthread_mutex_unlock(&g_idle_mutex);
-
-    while (list) {
-        KIdleTask* task = list;
-        list = task->next;
-        if (task->callback) {
-            task->callback(task->user_data);
+    for (;;) {
+        pthread_mutex_lock(&g_idle_mutex);
+        KIdleTask* list = g_idle_head;
+        g_idle_head = NULL;
+        g_idle_tail = NULL;
+        if (!list) {
+            g_has_pending_idle = 0;
+            pthread_mutex_unlock(&g_idle_mutex);
+            break;
         }
-        free(task);
+        pthread_mutex_unlock(&g_idle_mutex);
+
+        while (list) {
+            KIdleTask* task = list;
+            list = task->next;
+            if (task->callback) {
+                task->callback(task->user_data);
+            }
+            free(task);
+        }
     }
     g_draining_idle_tasks = 0;
 }
 
 static int c_idle_trampoline(void* data) {
     (void)data;
+    if (g_draining_idle_tasks) {
+        return 1; // G_SOURCE_CONTINUE until the active drain completes
+    }
     kgtk_drain_idle_tasks();
     return 0; // G_SOURCE_REMOVE (one-shot)
 }
 
-static int c_periodic_idle_pump(void* data) {
-    (void)data;
-    if (g_has_pending_idle) {
-        kgtk_drain_idle_tasks();
-    }
-    return 1; // G_SOURCE_CONTINUE (keep 35ms pump alive)
-}
-
-static void kgtk_ensure_idle_pump(void) {
-    if (!g_idle_pump_registered) {
-        fn_g_timeout_add timeout_add = (fn_g_timeout_add)resolve_sym("g_timeout_add");
-        if (timeout_add) {
-            g_idle_pump_registered = 1;
-            timeout_add(35, c_periodic_idle_pump, NULL);
-        }
-    }
-}
-#endif
-
 void kgtk_main(void) {
-#if !defined(_WIN32)
-    kgtk_ensure_idle_pump();
     kgtk_drain_idle_tasks();
     fn_gtk_main fn = (fn_gtk_main)resolve_sym("gtk_main");
     if (fn) fn();
-#endif
 }
 
 void kgtk_main_quit(void) {
-#if !defined(_WIN32)
     fn_gtk_main_quit fn = (fn_gtk_main_quit)resolve_sym("gtk_main_quit");
     if (fn) fn();
-#endif
-}
-
-void kgtk_drain_events(void) {
-#if !defined(_WIN32)
-    fn_gtk_events_pending pending = (fn_gtk_events_pending)resolve_sym("gtk_events_pending");
-    fn_gtk_main_iteration_do iter = (fn_gtk_main_iteration_do)resolve_sym("gtk_main_iteration_do");
-    if (pending && iter) {
-        int max_iters = 256;
-        while (pending() && max_iters-- > 0) {
-            iter(0);
-        }
-    }
-#endif
 }
 
 void kgtk_reset_scroll_position(void) {
-#if !defined(_WIN32)
     g_last_scroll_y = 0.0;
     g_pending_scroll_restore = 0.0;
     g_scroll_reset_requested = true;
-#endif
 }
 
 void kgtk_set_scroll_position(double y) {
-#if !defined(_WIN32)
     double clamped_y = y < 0.0 ? 0.0 : y;
     g_scroll_reset_requested = false;
     g_last_scroll_y = clamped_y;
@@ -513,62 +468,46 @@ void kgtk_set_scroll_position(double y) {
             }
         }
     }
-#else
-    (void)y;
-#endif
 }
 
 double kgtk_get_scroll_position(void) {
-#if !defined(_WIN32)
     return g_last_scroll_y;
-#else
-    return 0.0;
-#endif
 }
 
+static void* g_root_gdk_window = NULL;
+
 void kgtk_window_freeze_updates(KWidgetRef window) {
-#if !defined(_WIN32)
-    if (!window) return;
+    if (!window || g_window_freeze_depth > 0) return;
     fn_gtk_widget_get_window get_win = (fn_gtk_widget_get_window)resolve_sym("gtk_widget_get_window");
     fn_gdk_window_freeze_updates freeze_fn = (fn_gdk_window_freeze_updates)resolve_sym("gdk_window_freeze_updates");
     if (get_win && freeze_fn) {
         void* gdk_win = get_win(window);
         if (gdk_win) {
+            g_root_gdk_window = gdk_win;
             freeze_fn(gdk_win);
-            g_window_freeze_depth++;
+            g_window_freeze_depth = 1;
         }
     }
-#else
-    (void)window;
-#endif
 }
 
 void kgtk_window_thaw_updates(KWidgetRef window) {
-#if !defined(_WIN32)
     if (!window || g_window_freeze_depth <= 0) return;
+    g_window_freeze_depth = 0;
     fn_gtk_widget_get_window get_win = (fn_gtk_widget_get_window)resolve_sym("gtk_widget_get_window");
     fn_gdk_window_thaw_updates thaw_fn = (fn_gdk_window_thaw_updates)resolve_sym("gdk_window_thaw_updates");
     if (get_win && thaw_fn) {
         void* gdk_win = get_win(window);
         if (gdk_win) {
-            while (g_window_freeze_depth > 0) {
-                thaw_fn(gdk_win);
-                g_window_freeze_depth--;
-            }
-        } else {
-            g_window_freeze_depth = 0;
+            thaw_fn(gdk_win);
         }
-    } else {
-        g_window_freeze_depth = 0;
     }
-#else
-    (void)window;
-#endif
 }
 
+static bool g_label_wrap_queued_resize = false;
+
 void kgtk_flush_updates(KWidgetRef window) {
-#if !defined(_WIN32)
     fn_gtk_container_check_resize check_resize = (fn_gtk_container_check_resize)resolve_sym("gtk_container_check_resize");
+    fn_gtk_bin_get_child get_child = (fn_gtk_bin_get_child)resolve_sym("gtk_bin_get_child");
     fn_gdk_window_process_all_updates process_updates = (fn_gdk_window_process_all_updates)resolve_sym("gdk_window_process_all_updates");
     fn_gdk_flush flush_fn = (fn_gdk_flush)resolve_sym("gdk_flush");
     fn_gtk_scrolled_window_get_vadjustment get_vadj = (fn_gtk_scrolled_window_get_vadjustment)resolve_sym("gtk_scrolled_window_get_vadjustment");
@@ -580,35 +519,22 @@ void kgtk_flush_updates(KWidgetRef window) {
     g_scroll_tracking_enabled = false;
 
     if (check_resize && window) {
-        check_resize(window);
-    }
-
-    if (g_active_scrolled_window && get_vadj && set_val && saved_scroll_y > 0.0) {
-        void* vadj_early = get_vadj(g_active_scrolled_window);
-        if (vadj_early) {
-            double target_early = saved_scroll_y;
-            if (get_upper && get_page) {
-                double u = get_upper(vadj_early);
-                double p = get_page(vadj_early);
-                if (u > p + 1.0 && p > 1.0) {
-                    double max_v = u - p;
-                    if (target_early > max_v) target_early = max_v;
-                }
+        for (int pass = 0; pass < 4; ++pass) {
+            g_label_wrap_queued_resize = false;
+            check_resize(window);
+            if (g_active_scrolled_window && get_child) {
+                KWidgetRef vp = get_child(g_active_scrolled_window);
+                if (vp) check_resize(vp);
+                check_resize(g_active_scrolled_window);
             }
-            if (target_early > 0.0) {
-                set_val(vadj_early, target_early);
+            if (g_active_modal_scrolled_window && get_child) {
+                KWidgetRef vp = get_child(g_active_modal_scrolled_window);
+                if (vp) check_resize(vp);
+                check_resize(g_active_modal_scrolled_window);
             }
+            if (!g_label_wrap_queued_resize) break;
         }
     }
-
-    // Drain pending GTK size-request/size-allocate idle handlers while window updates are still frozen
-    // and scroll tracking is disabled so vadj->upper and vadj->page_size reach their true final heights.
-    kgtk_drain_events();
-
-    if (check_resize && window) {
-        check_resize(window);
-    }
-    kgtk_drain_events();
 
     if (g_active_scrolled_window && get_vadj && set_val) {
         void* vadj = get_vadj(g_active_scrolled_window);
@@ -629,20 +555,17 @@ void kgtk_flush_updates(KWidgetRef window) {
             if (target < 0.0) target = 0.0;
             set_val(vadj, target);
             g_last_scroll_y = target;
-            if (check_resize && window && target > 0.0) {
-                check_resize(window);
+            if (check_resize && g_active_scrolled_window && target > 0.0) {
+                check_resize(g_active_scrolled_window);
             }
         }
     } else {
         g_last_scroll_y = saved_scroll_y;
     }
 
+    kgtk_widget_queue_draw(window);
     kgtk_window_thaw_updates(window);
 
-    if (process_updates) {
-        process_updates();
-    }
-    kgtk_drain_events();
     if (process_updates) {
         process_updates();
     }
@@ -650,38 +573,39 @@ void kgtk_flush_updates(KWidgetRef window) {
         flush_fn();
     }
     g_scroll_tracking_enabled = true;
-#else
-    (void)window;
-#endif
 }
 
 void kgtk_flush_live_drag(KWidgetRef window) {
-#if !defined(_WIN32)
     fn_gtk_container_check_resize check_resize = (fn_gtk_container_check_resize)resolve_sym("gtk_container_check_resize");
     fn_gtk_bin_get_child get_child = (fn_gtk_bin_get_child)resolve_sym("gtk_bin_get_child");
     fn_gdk_window_process_all_updates process_updates = (fn_gdk_window_process_all_updates)resolve_sym("gdk_window_process_all_updates");
     fn_gdk_flush flush_fn = (fn_gdk_flush)resolve_sym("gdk_flush");
 
     if (check_resize && window) {
-        if (g_active_scrolled_window && get_child) {
-            KWidgetRef vp = get_child(g_active_scrolled_window);
-            if (vp) check_resize(vp);
+        for (int pass = 0; pass < 4; ++pass) {
+            g_label_wrap_queued_resize = false;
+            if (g_active_scrolled_window && get_child) {
+                KWidgetRef vp = get_child(g_active_scrolled_window);
+                if (vp) check_resize(vp);
+            }
+            if (g_active_modal_scrolled_window && get_child) {
+                KWidgetRef vp = get_child(g_active_modal_scrolled_window);
+                if (vp) check_resize(vp);
+            }
+            check_resize(window);
+            if (!g_label_wrap_queued_resize) break;
         }
-        check_resize(window);
     }
+    kgtk_window_thaw_updates(window);
     if (process_updates) {
         process_updates();
     }
     if (flush_fn) {
         flush_fn();
     }
-#else
-    (void)window;
-#endif
 }
 
 void kgtk_schedule_idle(KIdleCallback callback, void* user_data) {
-#if !defined(_WIN32)
     if (!callback) return;
     fn_g_idle_add idle_add = (fn_g_idle_add)resolve_sym("g_idle_add");
     fn_g_idle_add_full idle_add_full = (fn_g_idle_add_full)resolve_sym("g_idle_add_full");
@@ -724,23 +648,16 @@ void kgtk_schedule_idle(KIdleCallback callback, void* user_data) {
     pthread_mutex_lock(&g_fallback_idle_mutex);
     callback(user_data);
     pthread_mutex_unlock(&g_fallback_idle_mutex);
-#endif
 }
 
 bool kgtk_is_slider_dragging(void) {
-#if !defined(_WIN32)
     return g_slider_dragging || g_gesture_dragging || g_canvas_dragging || (g_scroll_drag.active && g_scroll_drag.threshold_crossed);
-#else
-    return false;
-#endif
 }
 
 void kgtk_reset_slider_dragging(void) {
-#if !defined(_WIN32)
     g_slider_dragging = false;
     g_gesture_dragging = false;
     g_canvas_dragging = false;
-#endif
 }
 
 static int g_simulated_screen_width = 1236;
@@ -760,7 +677,6 @@ void kgtk_set_simulated_screen_size(int width, int height) {
 void kgtk_get_screen_size(int* out_width, int* out_height) {
     int w = g_simulated_screen_width;
     int h = g_simulated_screen_height;
-#if !defined(_WIN32)
     if (!g_has_simulated_screen_size) {
         fn_gdk_screen_get_default get_def = (fn_gdk_screen_get_default)resolve_sym("gdk_screen_get_default");
         fn_gdk_screen_get_width get_w = (fn_gdk_screen_get_width)resolve_sym("gdk_screen_get_width");
@@ -777,7 +693,6 @@ void kgtk_get_screen_size(int* out_width, int* out_height) {
             }
         }
     }
-#endif
     if (out_width) *out_width = w;
     if (out_height) *out_height = h;
 }
@@ -822,23 +737,18 @@ static int kgtk_scale_signed_px(int val) {
 }
 
 KWidgetRef kgtk_window_new(int window_type) {
-#if !defined(_WIN32)
     fn_gtk_window_new fn = (fn_gtk_window_new)resolve_sym("gtk_window_new");
     if (fn) return fn(window_type);
-#endif
     return NULL;
 }
 
 void kgtk_window_set_title(KWidgetRef window, const char* title) {
-#if !defined(_WIN32)
     fn_gtk_window_set_title fn = (fn_gtk_window_set_title)resolve_sym("gtk_window_set_title");
     if (fn && window) fn(window, title);
-#endif
 }
 
 typedef void (*fn_gtk_window_set_resizable)(KWidgetRef, int);
 
-#if !defined(_WIN32)
 static int g_window_default_w = 0;
 static int g_window_default_h = 0;
 
@@ -853,10 +763,8 @@ static void c_window_clamp_size_request(KWidgetRef widget, KGtkRequisition* req,
         req->height = g_window_default_h;
     }
 }
-#endif
 
 void kgtk_window_set_default_size(KWidgetRef window, int width, int height) {
-#if !defined(_WIN32)
     g_window_default_w = width;
     g_window_default_h = height;
     fn_gtk_window_set_default_size fn = (fn_gtk_window_set_default_size)resolve_sym("gtk_window_set_default_size");
@@ -869,24 +777,13 @@ void kgtk_window_set_default_size(KWidgetRef window, int width, int height) {
     if (conn && window) {
         conn(window, "size-request", (void*)c_window_clamp_size_request, NULL, NULL, 1);
     }
-#endif
 }
 
 void kgtk_window_set_position(KWidgetRef window, int position) {
-#if !defined(_WIN32)
     fn_gtk_window_set_position fn = (fn_gtk_window_set_position)resolve_sym("gtk_window_set_position");
     if (fn && window) fn(window, position);
-#endif
 }
 
-void kgtk_window_fullscreen(KWidgetRef window) {
-#if !defined(_WIN32)
-    fn_gtk_window_fullscreen fn = (fn_gtk_window_fullscreen)resolve_sym("gtk_window_fullscreen");
-    if (fn && window) fn(window);
-#endif
-}
-
-#if !defined(_WIN32)
 typedef struct {
     int type;
     void* window;
@@ -929,20 +826,13 @@ static int c_window_key_press(KWidgetRef widget, void* event, void* data) {
     }
     return 0;
 }
-#endif
 
 void kgtk_set_global_key_handler(KWindowKeyCallback handler, void* user_data) {
-#if !defined(_WIN32)
     g_global_key_handler = handler;
     g_global_key_user_data = user_data;
-#else
-    (void)handler;
-    (void)user_data;
-#endif
 }
 
 void kgtk_window_connect_quit_keys(KWidgetRef window, KIdleCallback on_quit, void* user_data) {
-#if !defined(_WIN32)
     fn_g_signal_connect_data conn = (fn_g_signal_connect_data)resolve_sym("g_signal_connect_data");
     fn_g_object_set_data_full set_data = (fn_g_object_set_data_full)resolve_sym("g_object_set_data_full");
     if (conn && window && on_quit) {
@@ -956,48 +846,36 @@ void kgtk_window_connect_quit_keys(KWidgetRef window, KIdleCallback on_quit, voi
             conn(window, "key-press-event", (void*)c_window_key_press, task, NULL, 0);
         }
     }
-#endif
 }
 
 KWidgetRef kgtk_vbox_new(bool homogeneous, int spacing) {
-#if !defined(_WIN32)
     fn_gtk_box_new_2 fn = (fn_gtk_box_new_2)resolve_sym("gtk_vbox_new");
     if (fn) return fn(homogeneous ? 1 : 0, kgtk_scale_px(spacing));
-#endif
     return NULL;
 }
 
 KWidgetRef kgtk_hbox_new(bool homogeneous, int spacing) {
-#if !defined(_WIN32)
     fn_gtk_box_new_2 fn = (fn_gtk_box_new_2)resolve_sym("gtk_hbox_new");
     if (fn) return fn(homogeneous ? 1 : 0, kgtk_scale_px(spacing));
-#endif
     return NULL;
 }
 
 void kgtk_box_pack_start(KWidgetRef box, KWidgetRef child, bool expand, bool fill, int padding) {
-#if !defined(_WIN32)
     fn_gtk_box_pack_start fn = (fn_gtk_box_pack_start)resolve_sym("gtk_box_pack_start");
     if (fn && box && child) fn(box, child, expand ? 1 : 0, fill ? 1 : 0, (unsigned int)kgtk_scale_px(padding));
-#endif
 }
 
 void kgtk_container_add(KWidgetRef container, KWidgetRef widget) {
-#if !defined(_WIN32)
     fn_gtk_container_add fn = (fn_gtk_container_add)resolve_sym("gtk_container_add");
     if (fn && container && widget) fn(container, widget);
-#endif
 }
 
-void kgtk_container_remove(KWidgetRef container, KWidgetRef widget) {
-#if !defined(_WIN32)
+static void kgtk_container_remove(KWidgetRef container, KWidgetRef widget) {
     fn_gtk_container_remove fn = (fn_gtk_container_remove)resolve_sym("gtk_container_remove");
     if (fn && container && widget) fn(container, widget);
-#endif
 }
 
 void kgtk_container_clear(KWidgetRef container) {
-#if !defined(_WIN32)
     g_scroll_drag.active = false;
     g_scroll_drag.threshold_crossed = false;
     g_scroll_drag.active_sw = NULL;
@@ -1038,28 +916,17 @@ void kgtk_container_clear(KWidgetRef container) {
         }
         if (free_fn && list) free_fn(list);
     }
-#endif
-}
-
-void kgtk_container_set_border_width(KWidgetRef container, int border_width) {
-#if !defined(_WIN32)
-    fn_gtk_container_set_border_width fn = (fn_gtk_container_set_border_width)resolve_sym("gtk_container_set_border_width");
-    if (fn && container) fn(container, (unsigned int)kgtk_scale_px(border_width));
-#endif
 }
 
 KWidgetRef kgtk_alignment_new(float xalign, float yalign, float xscale, float yscale) {
-#if !defined(_WIN32)
     fn_gtk_alignment_new fn = (fn_gtk_alignment_new)resolve_sym("gtk_alignment_new");
     if (fn) {
         return fn(xalign, yalign, xscale, yscale);
     }
-#endif
     return NULL;
 }
 
 void kgtk_alignment_set_padding(KWidgetRef alignment, int top, int bottom, int left, int right) {
-#if !defined(_WIN32)
     fn_gtk_alignment_set_padding fn = (fn_gtk_alignment_set_padding)resolve_sym("gtk_alignment_set_padding");
     if (fn && alignment) {
         fn(
@@ -1070,25 +937,8 @@ void kgtk_alignment_set_padding(KWidgetRef alignment, int top, int bottom, int l
             (unsigned int)kgtk_scale_px(right)
         );
     }
-#endif
 }
 
-KWidgetRef kgtk_frame_new(const char* label) {
-#if !defined(_WIN32)
-    fn_gtk_frame_new fn = (fn_gtk_frame_new)resolve_sym("gtk_frame_new");
-    if (fn) return fn(label);
-#endif
-    return NULL;
-}
-
-void kgtk_frame_set_shadow_type(KWidgetRef frame, int shadow_type) {
-#if !defined(_WIN32)
-    fn_gtk_frame_set_shadow_type fn = (fn_gtk_frame_set_shadow_type)resolve_sym("gtk_frame_set_shadow_type");
-    if (fn && frame) fn(frame, shadow_type);
-#endif
-}
-
-#if !defined(_WIN32)
 typedef int (KGTK_ABI *fn_gdk_event_get_root_coords)(void*, double*, double*);
 typedef int (KGTK_ABI *fn_gdk_event_get_state)(void*, unsigned int*);
 typedef KWidgetRef (KGTK_ABI *fn_gtk_widget_get_parent)(KWidgetRef);
@@ -1477,10 +1327,8 @@ static int c_frozen_scroll_expose(KWidgetRef widget, void* event, void* data) {
     }
     return 1;
 }
-#endif
 
 KWidgetRef kgtk_frozen_scrolled_view_new(uint8_t bg_gray) {
-#if !defined(_WIN32)
     double saved_y = g_pending_scroll_restore > 0.0 ? g_pending_scroll_restore : g_last_scroll_y;
     g_pending_scroll_restore = saved_y;
     g_last_scroll_y = saved_y;
@@ -1511,14 +1359,9 @@ KWidgetRef kgtk_frozen_scrolled_view_new(uint8_t bg_gray) {
         free(st);
     }
     return eb;
-#else
-    (void)bg_gray;
-    return NULL;
-#endif
 }
 
 void kgtk_frozen_scrolled_view_add(KWidgetRef frozen_view, KWidgetRef child) {
-#if !defined(_WIN32)
     if (!frozen_view || !child) return;
     typedef void* (*fn_g_object_get_data)(void*, const char*);
     fn_g_object_get_data get_data = (fn_g_object_get_data)resolve_sym("g_object_get_data");
@@ -1531,14 +1374,9 @@ void kgtk_frozen_scrolled_view_add(KWidgetRef frozen_view, KWidgetRef child) {
         conn(child, "size-request", (void*)c_frozen_child_size_request, st, NULL, 1);
     }
     kgtk_container_add(frozen_view, child);
-#else
-    (void)frozen_view;
-    (void)child;
-#endif
 }
 
 KWidgetRef kgtk_scrolled_window_new(void) {
-#if !defined(_WIN32)
     fn_gtk_scrolled_window_new fn = (fn_gtk_scrolled_window_new)resolve_sym("gtk_scrolled_window_new");
     fn_gtk_scrolled_window_set_policy policy_fn = (fn_gtk_scrolled_window_set_policy)resolve_sym("gtk_scrolled_window_set_policy");
     fn_g_object_set_data_full set_data = (fn_g_object_set_data_full)resolve_sym("g_object_set_data_full");
@@ -1564,22 +1402,18 @@ KWidgetRef kgtk_scrolled_window_new(void) {
         }
         return sw;
     }
-#endif
     return NULL;
 }
 
 void kgtk_scrolled_window_set_show_indicators(KWidgetRef scrolled_window, bool show_indicators) {
-#if !defined(_WIN32)
     fn_gtk_scrolled_window_set_policy policy_fn = (fn_gtk_scrolled_window_set_policy)resolve_sym("gtk_scrolled_window_set_policy");
     if (policy_fn && scrolled_window) {
         // Horizontal: GTK_POLICY_NEVER (2), Vertical: AUTOMATIC (1) or NEVER (2)
         policy_fn(scrolled_window, 2, show_indicators ? 1 : 2);
     }
-#endif
 }
 
 void kgtk_scrolled_window_set_bg_gray(KWidgetRef scrolled_window, uint8_t gray_level) {
-#if !defined(_WIN32)
     if (!scrolled_window) return;
     kgtk_widget_modify_bg_gray(scrolled_window, 0, gray_level);
     fn_gtk_bin_get_child get_child = (fn_gtk_bin_get_child)resolve_sym("gtk_bin_get_child");
@@ -1589,11 +1423,9 @@ void kgtk_scrolled_window_set_bg_gray(KWidgetRef scrolled_window, uint8_t gray_l
             kgtk_widget_modify_bg_gray(vp, 0, gray_level);
         }
     }
-#endif
 }
 
 void kgtk_scrolled_window_add_with_viewport(KWidgetRef scrolled_window, KWidgetRef child) {
-#if !defined(_WIN32)
     fn_gtk_scrolled_window_add_with_viewport fn = (fn_gtk_scrolled_window_add_with_viewport)resolve_sym("gtk_scrolled_window_add_with_viewport");
     fn_gtk_bin_get_child get_child = (fn_gtk_bin_get_child)resolve_sym("gtk_bin_get_child");
     fn_gtk_viewport_set_shadow_type set_shadow = (fn_gtk_viewport_set_shadow_type)resolve_sym("gtk_viewport_set_shadow_type");
@@ -1648,18 +1480,14 @@ void kgtk_scrolled_window_add_with_viewport(KWidgetRef scrolled_window, KWidgetR
             }
         }
     }
-#endif
 }
 
 KWidgetRef kgtk_event_box_new(void) {
-#if !defined(_WIN32)
     fn_gtk_event_box_new fn = (fn_gtk_event_box_new)resolve_sym("gtk_event_box_new");
     if (fn) return fn();
-#endif
     return NULL;
 }
 
-#if !defined(_WIN32)
 static void c_zstack_clamp_size_request(KWidgetRef widget, KGtkRequisition* req, void* data) {
     (void)widget;
     (void)data;
@@ -1671,10 +1499,8 @@ static void c_zstack_clamp_size_request(KWidgetRef widget, KGtkRequisition* req,
         req->height = g_window_default_h;
     }
 }
-#endif
 
 KWidgetRef kgtk_zstack_new(void) {
-#if !defined(_WIN32)
     fn_gtk_table_new fn = (fn_gtk_table_new)resolve_sym("gtk_table_new");
     fn_g_signal_connect_data conn = (fn_g_signal_connect_data)resolve_sym("g_signal_connect_data");
     if (fn) {
@@ -1684,115 +1510,42 @@ KWidgetRef kgtk_zstack_new(void) {
         }
         return tbl;
     }
-#endif
     return kgtk_vbox_new(false, 0);
 }
 
 void kgtk_zstack_add(KWidgetRef zstack, KWidgetRef child) {
-#if !defined(_WIN32)
     fn_gtk_table_attach attach = (fn_gtk_table_attach)resolve_sym("gtk_table_attach");
     if (attach && zstack && child) {
         // GTK_EXPAND | GTK_SHRINK | GTK_FILL = 1 | 2 | 4 = 7
         attach(zstack, child, 0, 1, 0, 1, 7, 7, 0, 0);
         return;
     }
-#endif
     if (zstack && child) {
         kgtk_box_pack_start(zstack, child, true, true, 0);
     }
 }
 
 void kgtk_widget_set_sensitive(KWidgetRef widget, bool sensitive) {
-#if !defined(_WIN32)
     fn_gtk_widget_set_sensitive fn = (fn_gtk_widget_set_sensitive)resolve_sym("gtk_widget_set_sensitive");
     if (fn && widget) fn(widget, sensitive ? 1 : 0);
-#endif
-}
-
-#if !defined(_WIN32)
-typedef struct {
-    uint8_t bg_gray;
-    double alpha;
-} KModalScrimState;
-
-static int c_modal_scrim_expose(KWidgetRef widget, void* event, void* data) {
-    (void)event;
-    KModalScrimState* st = (KModalScrimState*)data;
-    if (!st || !widget) return 0;
-
-    fn_gtk_widget_get_window get_win = (fn_gtk_widget_get_window)resolve_sym("gtk_widget_get_window");
-    fn_gtk_widget_get_allocation get_alloc = (fn_gtk_widget_get_allocation)resolve_sym("gtk_widget_get_allocation");
-    fn_gdk_cairo_create cairo_create = (fn_gdk_cairo_create)resolve_sym("gdk_cairo_create");
-    fn_cairo_destroy cairo_destroy = (fn_cairo_destroy)resolve_sym("cairo_destroy");
-    fn_cairo_set_source_rgba set_rgba = (fn_cairo_set_source_rgba)resolve_sym("cairo_set_source_rgba");
-    fn_cairo_rectangle rect = (fn_cairo_rectangle)resolve_sym("cairo_rectangle");
-    fn_cairo_fill fill = (fn_cairo_fill)resolve_sym("cairo_fill");
-    if (!get_win || !get_alloc || !cairo_create || !cairo_destroy || !set_rgba || !rect || !fill) return 0;
-
-    void* gdk_win = get_win(widget);
-    if (!gdk_win) return 0;
-    KGtkAllocation alloc = { 0, 0, 0, 0 };
-    get_alloc(widget, &alloc);
-    if (alloc.width <= 1 || alloc.height <= 1) return 0;
-
-    void* cr = cairo_create(gdk_win);
-    if (!cr) return 0;
-    double g = (double)st->bg_gray / 255.0;
-    set_rgba(cr, g, g, g, st->alpha);
-    rect(cr, (double)alloc.x, (double)alloc.y, (double)alloc.width, (double)alloc.height);
-    fill(cr);
-    cairo_destroy(cr);
-    return 0;
-}
-#endif
-
-KWidgetRef kgtk_modal_scrim_new(KWidgetRef child, uint8_t bg_gray, double alpha, double xalign, double yalign, double xscale, double yscale) {
-#if !defined(_WIN32)
-    KWidgetRef align = kgtk_alignment_new(xalign, yalign, xscale, yscale);
-    fn_g_signal_connect_data conn = (fn_g_signal_connect_data)resolve_sym("g_signal_connect_data");
-    fn_g_object_set_data_full set_data = (fn_g_object_set_data_full)resolve_sym("g_object_set_data_full");
-    if (!align) return child;
-    if (child) kgtk_container_add(align, child);
-    KModalScrimState* st = (KModalScrimState*)malloc(sizeof(KModalScrimState));
-    if (st && conn) {
-        st->bg_gray = bg_gray;
-        st->alpha = alpha;
-        if (set_data) {
-            set_data(align, "kindle-modal-scrim-state", st, free);
-        }
-        conn(align, "expose-event", (void*)c_modal_scrim_expose, st, NULL, 0);
-    } else if (st) {
-        free(st);
-    }
-    return align;
-#else
-    return child;
-#endif
 }
 
 KWidgetRef kgtk_label_new(const char* text) {
-#if !defined(_WIN32)
     fn_gtk_label_new fn = (fn_gtk_label_new)resolve_sym("gtk_label_new");
     if (fn) return fn(text);
-#endif
     return NULL;
 }
 
 void kgtk_label_set_text(KWidgetRef label, const char* text) {
-#if !defined(_WIN32)
     fn_gtk_label_set_text fn = (fn_gtk_label_set_text)resolve_sym("gtk_label_set_text");
     if (fn && label) fn(label, text);
-#endif
 }
 
 void kgtk_label_set_markup(KWidgetRef label, const char* markup) {
-#if !defined(_WIN32)
     fn_gtk_label_set_markup fn = (fn_gtk_label_set_markup)resolve_sym("gtk_label_set_markup");
     if (fn && label) fn(label, markup);
-#endif
 }
 
-#if !defined(_WIN32)
 typedef void* (KGTK_ABI *fn_gtk_label_get_layout)(KWidgetRef);
 typedef void (KGTK_ABI *fn_pango_layout_set_width)(void*, int);
 typedef void (KGTK_ABI *fn_pango_layout_set_wrap)(void*, int);
@@ -1800,34 +1553,60 @@ typedef int (KGTK_ABI *fn_pango_layout_get_width)(void*);
 typedef void (KGTK_ABI *fn_pango_layout_get_pixel_size)(void*, int*, int*);
 typedef void (KGTK_ABI *fn_gtk_widget_queue_resize)(KWidgetRef);
 
+static int c_label_target_pango_width(KWidgetRef widget) {
+    fn_g_object_get_data get_data = (fn_g_object_get_data)resolve_sym("g_object_get_data");
+    int saved_w = get_data ? (int)(intptr_t)get_data(widget, "kindle-label-wrap-w") : 0;
+    int wrap_w = saved_w;
+    if (wrap_w <= 60) {
+        wrap_w = kgtk_scale_px(1720);
+        if (wrap_w <= 60) wrap_w = 1120;
+    }
+    int pad_deduct = (saved_w > 60) ? 2 : 6;
+    return (wrap_w - pad_deduct) * 1024;
+}
+
+static void c_label_wrap_size_request_pre(KWidgetRef widget, KGtkRequisition* req, void* data) {
+    (void)req;
+    (void)data;
+    if (!widget) return;
+    fn_gtk_label_get_layout get_layout = (fn_gtk_label_get_layout)resolve_sym("gtk_label_get_layout");
+    fn_pango_layout_set_width set_width = (fn_pango_layout_set_width)resolve_sym("pango_layout_set_width");
+    fn_pango_layout_get_width get_width = (fn_pango_layout_get_width)resolve_sym("pango_layout_get_width");
+    fn_pango_layout_set_wrap set_wrap = (fn_pango_layout_set_wrap)resolve_sym("pango_layout_set_wrap");
+    if (!get_layout || !set_width) return;
+
+    void* layout = get_layout(widget);
+    if (!layout) return;
+    if (set_wrap) set_wrap(layout, 0); // PANGO_WRAP_WORD
+
+    int target_pango_w = c_label_target_pango_width(widget);
+    if (!get_width || get_width(layout) != target_pango_w) {
+        set_width(layout, target_pango_w);
+    }
+}
+
 static void c_label_wrap_size_request(KWidgetRef widget, KGtkRequisition* req, void* data) {
     (void)data;
     if (!widget || !req) return;
     fn_gtk_label_get_layout get_layout = (fn_gtk_label_get_layout)resolve_sym("gtk_label_get_layout");
     fn_pango_layout_set_width set_width = (fn_pango_layout_set_width)resolve_sym("pango_layout_set_width");
+    fn_pango_layout_get_width get_width = (fn_pango_layout_get_width)resolve_sym("pango_layout_get_width");
     fn_pango_layout_set_wrap set_wrap = (fn_pango_layout_set_wrap)resolve_sym("pango_layout_set_wrap");
     fn_pango_layout_get_pixel_size get_pixel_size = (fn_pango_layout_get_pixel_size)resolve_sym("pango_layout_get_pixel_size");
-    fn_g_object_get_data get_data = (fn_g_object_get_data)resolve_sym("g_object_get_data");
     if (!get_layout || !set_width || !get_pixel_size) return;
 
     void* layout = get_layout(widget);
     if (!layout) return;
     if (set_wrap) set_wrap(layout, 0); // PANGO_WRAP_WORD
 
-    int saved_w = get_data ? (int)(intptr_t)get_data(widget, "kindle-label-wrap-w") : 0;
-    int wrap_w = saved_w;
-    if (wrap_w <= 60) {
-        wrap_w = kgtk_scale_px(1120);
-        if (wrap_w <= 60) wrap_w = 750;
+    int target_pango_w = c_label_target_pango_width(widget);
+    if (!get_width || get_width(layout) != target_pango_w) {
+        set_width(layout, target_pango_w);
     }
-
-    int pad_deduct = (saved_w > 60) ? 2 : 6;
-    int target_pango_w = (wrap_w - pad_deduct) * 1024;
-    set_width(layout, target_pango_w);
 
     int lw = 0, lh = 0;
     get_pixel_size(layout, &lw, &lh);
-    req->width = (saved_w > 60) ? saved_w : kgtk_scale_px(120);
+    req->width = kgtk_scale_px(120);
     if (lh > 0) {
         req->height = lh + 4;
     }
@@ -1858,222 +1637,70 @@ static void c_label_wrap_size_allocate(KWidgetRef widget, KGtkAllocation* alloc,
 
     int diff_w = alloc->width - prev_w;
     if (diff_w < 0) diff_w = -diff_w;
-    if (diff_w > 4) {
+    if (diff_w > 2) {
         if (set_data) {
             set_data(widget, "kindle-label-wrap-w", (void*)(intptr_t)alloc->width, NULL);
         }
         if (get_pixel_size && queue_resize) {
             int lw = 0, lh = 0;
             get_pixel_size(layout, &lw, &lh);
-            if (lh > 0 && (alloc->height < lh + 2 || alloc->height > lh + 10)) {
+            if (lh > 0 && (alloc->height < lh + 2 || alloc->height > lh + 8)) {
+                g_label_wrap_queued_resize = true;
                 queue_resize(widget);
             }
         }
     }
 }
-#endif
 
 void kgtk_label_set_line_wrap(KWidgetRef label, bool wrap) {
-#if !defined(_WIN32)
     fn_gtk_label_set_line_wrap fn = (fn_gtk_label_set_line_wrap)resolve_sym("gtk_label_set_line_wrap");
     if (fn && label) fn(label, wrap ? 1 : 0);
     if (wrap && label) {
         fn_g_signal_connect_data conn = (fn_g_signal_connect_data)resolve_sym("g_signal_connect_data");
         if (conn) {
+            conn(label, "size-request", (void*)c_label_wrap_size_request_pre, NULL, NULL, 0);
             conn(label, "size-request", (void*)c_label_wrap_size_request, NULL, NULL, 1);
             conn(label, "size-allocate", (void*)c_label_wrap_size_allocate, NULL, NULL, 0);
         }
     }
-#endif
 }
 
 void kgtk_label_set_justify(KWidgetRef label, int justify) {
-#if !defined(_WIN32)
     fn_gtk_label_set_justify fn = (fn_gtk_label_set_justify)resolve_sym("gtk_label_set_justify");
     if (fn && label) fn(label, justify);
-#endif
 }
 
 void kgtk_misc_set_alignment(KWidgetRef misc, float xalign, float yalign) {
-#if !defined(_WIN32)
     fn_gtk_misc_set_alignment fn = (fn_gtk_misc_set_alignment)resolve_sym("gtk_misc_set_alignment");
     if (fn && misc) fn(misc, xalign, yalign);
-#endif
-}
-
-KWidgetRef kgtk_button_new_with_label(const char* label) {
-#if !defined(_WIN32)
-    fn_gtk_button_new_with_label fn = (fn_gtk_button_new_with_label)resolve_sym("gtk_button_new_with_label");
-    if (fn) return fn(label);
-#endif
-    return NULL;
-}
-
-void kgtk_button_set_label(KWidgetRef button, const char* label) {
-#if !defined(_WIN32)
-    fn_gtk_button_set_label fn = (fn_gtk_button_set_label)resolve_sym("gtk_button_set_label");
-    if (fn && button) fn(button, label);
-#endif
-}
-
-KWidgetRef kgtk_check_button_new_with_label(const char* label) {
-#if !defined(_WIN32)
-    fn_gtk_check_button_new_with_label fn = (fn_gtk_check_button_new_with_label)resolve_sym("gtk_check_button_new_with_label");
-    if (fn) return fn(label);
-#endif
-    return NULL;
-}
-
-bool kgtk_toggle_button_get_active(KWidgetRef toggle_button) {
-#if !defined(_WIN32)
-    fn_gtk_toggle_button_get_active fn = (fn_gtk_toggle_button_get_active)resolve_sym("gtk_toggle_button_get_active");
-    if (fn && toggle_button) return fn(toggle_button) != 0;
-#endif
-    return false;
-}
-
-void kgtk_toggle_button_set_active(KWidgetRef toggle_button, bool is_active) {
-#if !defined(_WIN32)
-    fn_gtk_toggle_button_set_active fn = (fn_gtk_toggle_button_set_active)resolve_sym("gtk_toggle_button_set_active");
-    if (fn && toggle_button) fn(toggle_button, is_active ? 1 : 0);
-#endif
 }
 
 KWidgetRef kgtk_entry_new(void) {
-#if !defined(_WIN32)
     fn_gtk_entry_new fn = (fn_gtk_entry_new)resolve_sym("gtk_entry_new");
     if (fn) return fn();
-#endif
     return NULL;
 }
 
 void kgtk_entry_set_text(KWidgetRef entry, const char* text) {
-#if !defined(_WIN32)
     fn_gtk_entry_set_text fn = (fn_gtk_entry_set_text)resolve_sym("gtk_entry_set_text");
     if (fn && entry && text) fn(entry, text);
-#endif
 }
 
 const char* kgtk_entry_get_text(KWidgetRef entry) {
-#if !defined(_WIN32)
     fn_gtk_entry_get_text fn = (fn_gtk_entry_get_text)resolve_sym("gtk_entry_get_text");
     if (fn && entry) return fn(entry);
-#endif
     return "";
-}
-
-KWidgetRef kgtk_progress_bar_new(void) {
-#if !defined(_WIN32)
-    fn_gtk_progress_bar_new fn = (fn_gtk_progress_bar_new)resolve_sym("gtk_progress_bar_new");
-    if (fn) return fn();
-#endif
-    return NULL;
-}
-
-void kgtk_progress_bar_set_fraction(KWidgetRef pbar, double fraction) {
-#if !defined(_WIN32)
-    fn_gtk_progress_bar_set_fraction fn = (fn_gtk_progress_bar_set_fraction)resolve_sym("gtk_progress_bar_set_fraction");
-    if (fn && pbar) fn(pbar, fraction);
-#endif
-}
-
-void kgtk_progress_bar_set_text(KWidgetRef pbar, const char* text) {
-#if !defined(_WIN32)
-    fn_gtk_progress_bar_set_text fn = (fn_gtk_progress_bar_set_text)resolve_sym("gtk_progress_bar_set_text");
-    if (fn && pbar) fn(pbar, text);
-#endif
-}
-
-KWidgetRef kgtk_hscale_new_with_range(double min, double max, double step) {
-#if !defined(_WIN32)
-    fn_gtk_hscale_new_with_range fn = (fn_gtk_hscale_new_with_range)resolve_sym("gtk_hscale_new_with_range");
-    if (fn) return fn(min, max, step);
-#endif
-    return NULL;
-}
-
-double kgtk_range_get_value(KWidgetRef range) {
-#if !defined(_WIN32)
-    fn_gtk_range_get_value fn = (fn_gtk_range_get_value)resolve_sym("gtk_range_get_value");
-    if (fn && range) return fn(range);
-#endif
-    return 0.0;
-}
-
-void kgtk_range_set_value(KWidgetRef range, double value) {
-#if !defined(_WIN32)
-    fn_gtk_range_set_value fn = (fn_gtk_range_set_value)resolve_sym("gtk_range_set_value");
-    if (fn && range) fn(range, value);
-#endif
-}
-
-#if !defined(_WIN32)
-static int c_scale_button_press(KWidgetRef widget, void* event, void* data) {
-    (void)widget; (void)data;
-    if (!c_event_is_button1_press(event)) return 1;
-    g_slider_dragging = true;
-    return 0; // FALSE: let GtkRange handle the press too
-}
-
-static int c_scale_button_release(KWidgetRef widget, void* event, void* data) {
-    (void)widget;
-    if (!c_event_is_button1_release(event)) return 1;
-    g_slider_dragging = false;
-    KIdleTask* task = (KIdleTask*)data;
-    if (task && task->callback) {
-        kgtk_schedule_idle(task->callback, task->user_data);
-    }
-    return 0; // FALSE: let GtkRange finish handling release
-}
-#endif
-
-void kgtk_scale_connect_drag_watch(KWidgetRef scale, KIdleCallback on_drag_end, void* user_data) {
-#if !defined(_WIN32)
-    fn_g_signal_connect_data conn = (fn_g_signal_connect_data)resolve_sym("g_signal_connect_data");
-    fn_g_object_set_data_full set_data = (fn_g_object_set_data_full)resolve_sym("g_object_set_data_full");
-    if (conn && scale && on_drag_end) {
-        KIdleTask* task = (KIdleTask*)malloc(sizeof(KIdleTask));
-        if (task) {
-            task->callback = on_drag_end;
-            task->user_data = user_data;
-            if (set_data) {
-                set_data(scale, "kindle-scale-drag-task", task, free);
-            }
-            conn(scale, "button-press-event", (void*)c_scale_button_press, task, NULL, 0);
-            conn(scale, "button-release-event", (void*)c_scale_button_release, task, NULL, 0);
-        }
-    }
-#endif
-}
-
-KWidgetRef kgtk_hseparator_new(void) {
-#if !defined(_WIN32)
-    fn_gtk_separator_new fn = (fn_gtk_separator_new)resolve_sym("gtk_hseparator_new");
-    if (fn) return fn();
-#endif
-    return NULL;
-}
-
-KWidgetRef kgtk_vseparator_new(void) {
-#if !defined(_WIN32)
-    fn_gtk_separator_new fn = (fn_gtk_separator_new)resolve_sym("gtk_vseparator_new");
-    if (fn) return fn();
-#endif
-    return NULL;
 }
 
 static uint8_t kgtk_quantize_eink_gray(uint8_t gray);
 
-KWidgetRef kgtk_image_new_from_file(const char* filename) {
-#if !defined(_WIN32)
+static KWidgetRef kgtk_image_new_from_file(const char* filename) {
     fn_gtk_image_new_from_file fn = (fn_gtk_image_new_from_file)resolve_sym("gtk_image_new_from_file");
     if (fn && filename) return fn(filename);
-#endif
     return NULL;
 }
 
 KWidgetRef kgtk_image_new_from_file_scaled(const char* filename, int max_width, int max_height) {
-#if !defined(_WIN32)
     if (!filename) return NULL;
     typedef void* (KGTK_ABI *fn_gdk_pixbuf_new_from_file_at_scale)(const char*, int, int, int, void**);
     typedef void* (KGTK_ABI *fn_gdk_pixbuf_new_from_file)(const char*, void**);
@@ -2135,14 +1762,12 @@ KWidgetRef kgtk_image_new_from_file_scaled(const char* filename, int max_width, 
         if (unref) unref(pb);
         return img;
     }
-#endif
     return kgtk_image_new_from_file(filename);
 }
 
 // --- Interactive E-Ink Drawing Canvas (GtkDrawingArea) ---
 
 KWidgetRef kgtk_drawing_area_new(void) {
-#if !defined(_WIN32)
     fn_gtk_drawing_area_new fn = (fn_gtk_drawing_area_new)resolve_sym("gtk_drawing_area_new");
     fn_gtk_widget_add_events add_events = (fn_gtk_widget_add_events)resolve_sym("gtk_widget_add_events");
     if (fn) {
@@ -2154,31 +1779,23 @@ KWidgetRef kgtk_drawing_area_new(void) {
         }
         return da;
     }
-#endif
     return NULL;
 }
 
 KWidgetRef kgtk_nowindow_canvas_new(void) {
-#if !defined(_WIN32)
     KWidgetRef align = kgtk_alignment_new(0.0, 0.0, 1.0, 1.0);
     fn_g_object_set_data_full set_data = (fn_g_object_set_data_full)resolve_sym("g_object_set_data_full");
     if (align && set_data) {
         set_data(align, "kindle-nowindow-canvas", (void*)1, NULL);
     }
     return align;
-#else
-    return NULL;
-#endif
 }
 
-#if !defined(_WIN32)
 static KGtkAllocation g_canvas_expose_area = { 0, 0, 0, 0 };
 static bool g_has_canvas_expose_area = false;
-#endif
 
 void kgtk_widget_get_size(KWidgetRef widget, int* out_width, int* out_height) {
     int w = 0, h = 0;
-#if !defined(_WIN32)
     fn_gtk_widget_get_allocation get_alloc = (fn_gtk_widget_get_allocation)resolve_sym("gtk_widget_get_allocation");
     if (get_alloc && widget) {
         KGtkAllocation alloc = { 0, 0, 0, 0 };
@@ -2186,13 +1803,11 @@ void kgtk_widget_get_size(KWidgetRef widget, int* out_width, int* out_height) {
         w = alloc.width;
         h = alloc.height;
     }
-#endif
     if (out_width) *out_width = w;
     if (out_height) *out_height = h;
 }
 
 void kgtk_widget_queue_draw_rect(KWidgetRef widget, int x, int y, int width, int height) {
-#if !defined(_WIN32)
     fn_gtk_widget_queue_draw_area fn = (fn_gtk_widget_queue_draw_area)resolve_sym("gtk_widget_queue_draw_area");
     fn_gtk_widget_get_window get_win = (fn_gtk_widget_get_window)resolve_sym("gtk_widget_get_window");
     fn_gdk_window_process_updates proc_win = (fn_gdk_window_process_updates)resolve_sym("gdk_window_process_updates");
@@ -2205,11 +1820,9 @@ void kgtk_widget_queue_draw_rect(KWidgetRef widget, int x, int y, int width, int
             }
         }
     }
-#endif
 }
 
 void kgtk_draw_gray_pixels(KWidgetRef widget, const uint8_t* pixels, int width, int height, int stride) {
-#if !defined(_WIN32)
     fn_gtk_widget_get_window get_win = (fn_gtk_widget_get_window)resolve_sym("gtk_widget_get_window");
     fn_gtk_widget_get_allocation get_alloc = (fn_gtk_widget_get_allocation)resolve_sym("gtk_widget_get_allocation");
     fn_gdk_gc_new gc_new = (fn_gdk_gc_new)resolve_sym("gdk_gc_new");
@@ -2250,10 +1863,8 @@ void kgtk_draw_gray_pixels(KWidgetRef widget, const uint8_t* pixels, int width, 
             }
         }
     }
-#endif
 }
 
-#if !defined(_WIN32)
 typedef struct {
     KCanvasExposeCallback on_expose;
     KCanvasPointerCallback on_pointer;
@@ -2318,7 +1929,6 @@ static int c_canvas_button_release(KWidgetRef widget, void* event, void* data) {
     }
     return 1;
 }
-#endif
 
 void kgtk_drawing_area_connect(
     KWidgetRef widget,
@@ -2326,7 +1936,6 @@ void kgtk_drawing_area_connect(
     KCanvasPointerCallback on_pointer,
     void* user_data
 ) {
-#if !defined(_WIN32)
     fn_g_signal_connect_data conn = (fn_g_signal_connect_data)resolve_sym("g_signal_connect_data");
     fn_g_object_set_data_full set_data = (fn_g_object_set_data_full)resolve_sym("g_object_set_data_full");
     if (conn && widget) {
@@ -2344,11 +1953,9 @@ void kgtk_drawing_area_connect(
             conn(widget, "button-release-event", (void*)c_canvas_button_release, h, NULL, 0);
         }
     }
-#endif
 }
 
 void kgtk_widget_set_size_request(KWidgetRef widget, int width, int height) {
-#if !defined(_WIN32)
     fn_gtk_widget_set_size_request fn = (fn_gtk_widget_set_size_request)resolve_sym("gtk_widget_set_size_request");
     int sw = width > 0 ? kgtk_scale_px(width) : width;
     int sh = height > 0 ? kgtk_scale_px(height) : height;
@@ -2359,62 +1966,18 @@ void kgtk_widget_set_size_request(KWidgetRef widget, int width, int height) {
         }
     }
     if (fn && widget) fn(widget, sw, sh);
-#endif
-}
-
-void kgtk_widget_show(KWidgetRef widget) {
-#if !defined(_WIN32)
-    fn_gtk_widget_show fn = (fn_gtk_widget_show)resolve_sym("gtk_widget_show");
-    if (fn && widget) fn(widget);
-#endif
 }
 
 void kgtk_widget_show_all(KWidgetRef widget) {
-#if !defined(_WIN32)
     fn_gtk_widget_show_all fn = (fn_gtk_widget_show_all)resolve_sym("gtk_widget_show_all");
     if (fn && widget) fn(widget);
-#endif
-}
-
-void kgtk_widget_hide(KWidgetRef widget) {
-#if !defined(_WIN32)
-    fn_gtk_widget_hide fn = (fn_gtk_widget_hide)resolve_sym("gtk_widget_hide");
-    if (fn && widget) fn(widget);
-#endif
-}
-
-void kgtk_widget_destroy(KWidgetRef widget) {
-#if !defined(_WIN32)
-    fn_gtk_widget_destroy fn = (fn_gtk_widget_destroy)resolve_sym("gtk_widget_destroy");
-    if (fn && widget) fn(widget);
-#endif
 }
 
 void kgtk_widget_queue_draw(KWidgetRef widget) {
-#if !defined(_WIN32)
     fn_gtk_widget_queue_draw fn = (fn_gtk_widget_queue_draw)resolve_sym("gtk_widget_queue_draw");
     if (fn && widget) fn(widget);
-#endif
 }
 
-#if !defined(_WIN32)
-static bool is_gtk_button(KWidgetRef widget) {
-    fn_gtk_type_Fn get_type = (fn_gtk_type_Fn)resolve_sym("gtk_button_get_type");
-    fn_g_type_check_instance_is_a check_is_a = (fn_g_type_check_instance_is_a)resolve_sym("g_type_check_instance_is_a");
-    if (get_type && check_is_a && widget) {
-        return check_is_a(widget, get_type()) != 0;
-    }
-    return false;
-}
-
-static bool is_gtk_frame(KWidgetRef widget) {
-    fn_gtk_type_Fn get_type = (fn_gtk_type_Fn)resolve_sym("gtk_frame_get_type");
-    fn_g_type_check_instance_is_a check_is_a = (fn_g_type_check_instance_is_a)resolve_sym("g_type_check_instance_is_a");
-    if (get_type && check_is_a && widget) {
-        return check_is_a(widget, get_type()) != 0;
-    }
-    return false;
-}
 static uint8_t kgtk_quantize_eink_gray(uint8_t gray) {
     // Snap 8-bit gray to the 16 native E-Ink / Cairo 8-bit Xlib gray cube levels (0x00, 0x11, ..., 0xEE, 0xFF).
     // This prevents Cairo's XFillRectangle fast-path and Cairo's image compositor (rounded corners / Pango glyphs)
@@ -2425,223 +1988,629 @@ static uint8_t kgtk_quantize_eink_gray(uint8_t gray) {
     if (idx > 15u) idx = 15u;
     return (uint8_t)(idx * 17u);
 }
-#endif
 
-void kgtk_widget_modify_bg_gray(KWidgetRef widget, int state, uint8_t gray_level) {
-#if !defined(_WIN32)
-    fn_gtk_widget_modify_bg fn = (fn_gtk_widget_modify_bg)resolve_sym("gtk_widget_modify_bg");
-    if (fn && widget) {
-        gray_level = kgtk_quantize_eink_gray(gray_level);
-        uint16_t c16 = ((uint16_t)gray_level << 8) | gray_level;
-        KGdkColor color = { 0, c16, c16, c16 };
-        fn(widget, state, &color);
-        if (state == 0) {
-            // Also set PRELIGHT (2) and ACTIVE (1) so E-Ink buttons retain high contrast
-            fn(widget, 2, &color);
-            uint8_t active_gray = kgtk_quantize_eink_gray(gray_level > 128 ? (gray_level - 34) : (gray_level + 34));
-            uint16_t ac16 = ((uint16_t)active_gray << 8) | active_gray;
-            KGdkColor active_color = { 0, ac16, ac16, ac16 };
-            fn(widget, 1, &active_color);
+#define KGTK_FONT_CACHE_SIZE 64
+typedef struct {
+    char* key;
+    double scale;
+    void* desc;
+} KFontCacheEntry;
+static KFontCacheEntry g_font_cache[KGTK_FONT_CACHE_SIZE];
+
+static void* kgtk_lookup_or_create_font_desc(const char* font_desc_str, uint32_t* out_idx) {
+    if (out_idx) *out_idx = 63u;
+    if (!font_desc_str) return NULL;
+
+    double scale = kgtk_get_ui_scale();
+    uint32_t hash = sym_name_hash(font_desc_str);
+    uint32_t mask = KGTK_FONT_CACHE_SIZE - 1;
+    uint32_t idx = hash & mask;
+
+    // Reserve slot 63 as the "no font override" sentinel
+    for (uint32_t probes = 0; probes < KGTK_FONT_CACHE_SIZE - 1; ++probes) {
+        if (idx == 63u) idx = 0;
+        KFontCacheEntry* e = &g_font_cache[idx];
+        if (!e->key) break;
+        if (e->scale == scale && strcmp(e->key, font_desc_str) == 0) {
+            if (out_idx) *out_idx = idx;
+            return e->desc;
         }
+        idx = (idx + 1) & mask;
     }
-#endif
-}
 
-void kgtk_widget_modify_fg_gray(KWidgetRef widget, int state, uint8_t gray_level) {
-#if !defined(_WIN32)
-    fn_gtk_widget_modify_fg fn = (fn_gtk_widget_modify_fg)resolve_sym("gtk_widget_modify_fg");
-    if (fn && widget) {
-        gray_level = kgtk_quantize_eink_gray(gray_level);
-        uint16_t c16 = ((uint16_t)gray_level << 8) | gray_level;
-        KGdkColor color = { 0, c16, c16, c16 };
-        fn(widget, state, &color);
-        if (state == 0) {
-            fn(widget, 1, &color);
-            fn(widget, 2, &color);
-        }
-        if (is_gtk_frame(widget)) {
-            fn_gtk_frame_get_label_widget get_lbl = (fn_gtk_frame_get_label_widget)resolve_sym("gtk_frame_get_label_widget");
-            if (get_lbl) {
-                KWidgetRef lbl = get_lbl(widget);
-                if (lbl) kgtk_widget_modify_fg_gray(lbl, state, gray_level);
-            }
-        } else if (is_gtk_button(widget)) {
-            fn_gtk_bin_get_child get_child = (fn_gtk_bin_get_child)resolve_sym("gtk_bin_get_child");
-            if (get_child) {
-                KWidgetRef child = get_child(widget);
-                if (child) kgtk_widget_modify_fg_gray(child, state, gray_level);
-            }
-        }
-    }
-#endif
-}
-
-void kgtk_widget_modify_font_string(KWidgetRef widget, const char* font_desc_str) {
-#if !defined(_WIN32)
-    fn_gtk_widget_modify_font modify_fn = (fn_gtk_widget_modify_font)resolve_sym("gtk_widget_modify_font");
     fn_pango_font_description_from_string from_str = (fn_pango_font_description_from_string)resolve_sym("pango_font_description_from_string");
     fn_pango_font_description_get_size get_sz = (fn_pango_font_description_get_size)resolve_sym("pango_font_description_get_size");
     fn_pango_font_description_set_absolute_size set_abs = (fn_pango_font_description_set_absolute_size)resolve_sym("pango_font_description_set_absolute_size");
     fn_pango_font_description_free free_fn = (fn_pango_font_description_free)resolve_sym("pango_font_description_free");
-    if (modify_fn && from_str && widget && font_desc_str) {
-        void* desc = from_str(font_desc_str);
-        if (desc) {
-            if (get_sz && set_abs) {
-                int pango_pts = get_sz(desc);
-                if (pango_pts > 0) {
-                    // Convert logical points to exact scaled physical pixels (2.75 px/pt on 1860x2480 reference)
-                    double abs_pango = (double)pango_pts * 2.75 * kgtk_get_ui_scale();
-                    if (abs_pango < 9.0 * 1024.0) abs_pango = 9.0 * 1024.0;
-                    set_abs(desc, abs_pango);
-                }
-            }
-            modify_fn(widget, desc);
-            if (free_fn) free_fn(desc);
+    if (!from_str) return NULL;
+
+    void* desc = from_str(font_desc_str);
+    if (!desc) return NULL;
+    if (get_sz && set_abs) {
+        int pango_pts = get_sz(desc);
+        if (pango_pts > 0) {
+            // Convert logical points to exact scaled physical pixels (2.75 px/pt on 1860x2480 reference)
+            double abs_pango = (double)pango_pts * 2.75 * scale;
+            if (abs_pango < 9.0 * 1024.0) abs_pango = 9.0 * 1024.0;
+            set_abs(desc, abs_pango);
         }
-        if (is_gtk_frame(widget)) {
-            fn_gtk_frame_get_label_widget get_lbl = (fn_gtk_frame_get_label_widget)resolve_sym("gtk_frame_get_label_widget");
-            if (get_lbl) {
-                KWidgetRef lbl = get_lbl(widget);
-                if (lbl) kgtk_widget_modify_font_string(lbl, font_desc_str);
+    }
+
+    idx = hash & mask;
+    for (uint32_t probes = 0; probes < KGTK_FONT_CACHE_SIZE - 1; ++probes) {
+        if (idx == 63u) idx = 0;
+        KFontCacheEntry* e = &g_font_cache[idx];
+        if (!e->key) {
+            char* copy = strdup(font_desc_str);
+            if (copy) {
+                e->key = copy;
+                e->scale = scale;
+                e->desc = desc;
+                if (out_idx) *out_idx = idx;
+                return desc;
             }
-        } else if (is_gtk_button(widget)) {
-            fn_gtk_bin_get_child get_child = (fn_gtk_bin_get_child)resolve_sym("gtk_bin_get_child");
-            if (get_child) {
-                KWidgetRef child = get_child(widget);
-                if (child) kgtk_widget_modify_font_string(child, font_desc_str);
+            break;
+        }
+        idx = (idx + 1) & mask;
+    }
+    if (free_fn) free_fn(desc);
+    return NULL;
+}
+
+/* Shared GtkRcStyle cache:
+ * In GTK+-2.0, calling gtk_widget_modify_font / gtk_widget_modify_fg / gtk_widget_modify_bg
+ * creates a private per-widget GtkRcStyle via gtk_widget_get_modifier_style(widget).
+ * Because GTK2's realized_style_ht keys GtkStyle objects by the GSList of GtkRcStyle* pointers,
+ * private per-widget GtkRcStyle instances cause a 100% GtkStyle cache miss during gtk_widget_realize,
+ * forcing gtk_style_realize to run 40 synchronous XAllocColor X11 round-trips per widget!
+ * Sharing a single cached GtkRcStyle* per (font_idx, has_fg, fg_gray, has_bg, bg_gray) tuple
+ * via gtk_widget_modify_style(widget, rc_style) gives a 100% GtkStyle cache hit in realized_style_ht. */
+#define KGTK_RC_STYLE_CACHE_SIZE 256
+typedef struct {
+    uint32_t style_key;
+    void* rc_style;
+    void* proto_gtk_style;
+    void* pinned_gtk_style;
+} KRcStyleCacheEntry;
+static KRcStyleCacheEntry g_rc_style_cache[KGTK_RC_STYLE_CACHE_SIZE];
+
+typedef void* (KGTK_ABI *fn_gtk_rc_style_new)(void);
+typedef void (KGTK_ABI *fn_gtk_widget_modify_style)(KWidgetRef, void*);
+typedef void* (KGTK_ABI *fn_gtk_widget_get_modifier_style)(KWidgetRef);
+typedef void* (KGTK_ABI *fn_gtk_rc_get_style)(KWidgetRef);
+typedef void (KGTK_ABI *fn_gtk_widget_set_style)(KWidgetRef, void*);
+typedef void* (KGTK_ABI *fn_gtk_style_attach)(void*, void*);
+typedef void* (KGTK_ABI *fn_g_object_ref)(void*);
+
+static void kgtk_pin_cache_entry_style(KRcStyleCacheEntry* e, KWidgetRef widget) {
+    if (!e || e->proto_gtk_style || !g_root_gdk_window || !widget) return;
+    fn_gtk_rc_get_style rc_get_style = (fn_gtk_rc_get_style)resolve_sym("gtk_rc_get_style");
+    fn_gtk_style_attach style_attach = (fn_gtk_style_attach)resolve_sym("gtk_style_attach");
+    fn_gtk_widget_set_style set_style = (fn_gtk_widget_set_style)resolve_sym("gtk_widget_set_style");
+    fn_g_object_ref obj_ref = (fn_g_object_ref)resolve_sym("g_object_ref");
+    if (!rc_get_style || !style_attach || !set_style || !obj_ref) return;
+
+    void* proto = rc_get_style(widget);
+    if (proto) {
+        obj_ref(proto);
+        e->proto_gtk_style = proto;
+        // gtk_style_attach consumes one reference on proto and returns a reference to the realized GtkStyle
+        // with attach_count incremented by 1 so kgtk_container_clear never drops attach_count to 0!
+        obj_ref(proto);
+        e->pinned_gtk_style = style_attach(proto, g_root_gdk_window);
+        set_style(widget, proto);
+    }
+}
+
+static void kgtk_apply_rc_style_key(KWidgetRef widget, uint32_t new_key, uint32_t old_key) {
+    if (!widget || new_key == old_key) return;
+
+    fn_g_object_set_data_full set_data = (fn_g_object_set_data_full)resolve_sym("g_object_set_data_full");
+    fn_gtk_rc_style_new rc_style_new = (fn_gtk_rc_style_new)resolve_sym("gtk_rc_style_new");
+    fn_gtk_widget_modify_style mod_style = (fn_gtk_widget_modify_style)resolve_sym("gtk_widget_modify_style");
+    fn_gtk_widget_get_modifier_style get_mod_style = (fn_gtk_widget_get_modifier_style)resolve_sym("gtk_widget_get_modifier_style");
+    fn_gtk_widget_set_style set_style = (fn_gtk_widget_set_style)resolve_sym("gtk_widget_set_style");
+    fn_g_object_ref obj_ref = (fn_g_object_ref)resolve_sym("g_object_ref");
+    fn_g_object_unref obj_unref = (fn_g_object_unref)resolve_sym("g_object_unref");
+    if (set_data) {
+        set_data(widget, "k-rc-key", (void*)(uintptr_t)new_key, NULL);
+    }
+
+    uint32_t hash = (new_key * 2654435761u);
+    uint32_t mask = KGTK_RC_STYLE_CACHE_SIZE - 1;
+    uint32_t idx = (hash >> 16) & mask;
+
+    if (mod_style && get_mod_style && obj_ref) {
+        for (uint32_t probes = 0; probes < KGTK_RC_STYLE_CACHE_SIZE; ++probes) {
+            KRcStyleCacheEntry* e = &g_rc_style_cache[idx];
+            if (!e->style_key) break;
+            if (e->style_key == new_key && e->rc_style) {
+                if (e->proto_gtk_style && set_style) {
+                    set_style(widget, e->proto_gtk_style);
+                } else {
+                    mod_style(widget, e->rc_style);
+                    kgtk_pin_cache_entry_style(e, widget);
+                }
+                return;
+            }
+            idx = (idx + 1) & mask;
+        }
+        // Attach a fresh unshared GtkRcStyle before populating fields on this widget
+        if (rc_style_new) {
+            void* fresh_rc = rc_style_new();
+            if (fresh_rc) {
+                if (set_style) set_style(widget, NULL);
+                mod_style(widget, fresh_rc);
+                if (obj_unref) obj_unref(fresh_rc);
             }
         }
     }
-#endif
+
+    uint32_t font_idx = new_key & 0x3Fu;
+    if (font_idx < 63u && g_font_cache[font_idx].desc) {
+        fn_gtk_widget_modify_font mod_font = (fn_gtk_widget_modify_font)resolve_sym("gtk_widget_modify_font");
+        if (mod_font) mod_font(widget, g_font_cache[font_idx].desc);
+    }
+    if (new_key & (1u << 6)) {
+        fn_gtk_widget_modify_fg mod_fg = (fn_gtk_widget_modify_fg)resolve_sym("gtk_widget_modify_fg");
+        if (mod_fg) {
+            uint8_t fg_gray = (uint8_t)((new_key >> 8) & 0xFFu);
+            uint16_t c16 = ((uint16_t)fg_gray << 8) | fg_gray;
+            KGdkColor color = { 0, c16, c16, c16 };
+            mod_fg(widget, 0, &color);
+            mod_fg(widget, 1, &color);
+            mod_fg(widget, 2, &color);
+        }
+    }
+    if (new_key & (1u << 7)) {
+        fn_gtk_widget_modify_bg mod_bg = (fn_gtk_widget_modify_bg)resolve_sym("gtk_widget_modify_bg");
+        if (mod_bg) {
+            uint8_t bg_gray = (uint8_t)((new_key >> 16) & 0xFFu);
+            uint16_t c16 = ((uint16_t)bg_gray << 8) | bg_gray;
+            KGdkColor color = { 0, c16, c16, c16 };
+            mod_bg(widget, 0, &color);
+            mod_bg(widget, 2, &color);
+            uint8_t active_gray = kgtk_quantize_eink_gray(bg_gray > 128 ? (bg_gray - 34) : (bg_gray + 34));
+            uint16_t ac16 = ((uint16_t)active_gray << 8) | active_gray;
+            KGdkColor active_color = { 0, ac16, ac16, ac16 };
+            mod_bg(widget, 1, &active_color);
+        }
+    }
+
+    if (mod_style && get_mod_style && obj_ref) {
+        void* rc_style = get_mod_style(widget);
+        if (rc_style) {
+            idx = (hash >> 16) & mask;
+            for (uint32_t probes = 0; probes < KGTK_RC_STYLE_CACHE_SIZE; ++probes) {
+                KRcStyleCacheEntry* e = &g_rc_style_cache[idx];
+                if (!e->style_key) {
+                    obj_ref(rc_style);
+                    e->style_key = new_key;
+                    e->rc_style = rc_style;
+                    e->proto_gtk_style = NULL;
+                    e->pinned_gtk_style = NULL;
+                    kgtk_pin_cache_entry_style(e, widget);
+                    break;
+                }
+                idx = (idx + 1) & mask;
+            }
+        }
+    }
+}
+
+static uint32_t kgtk_get_widget_rc_key(KWidgetRef widget) {
+    fn_g_object_get_data get_data = (fn_g_object_get_data)resolve_sym("g_object_get_data");
+    uint32_t k = get_data ? (uint32_t)(uintptr_t)get_data(widget, "k-rc-key") : 0u;
+    return k ? k : ((1u << 31) | 63u);
+}
+
+void kgtk_widget_modify_bg_gray(KWidgetRef widget, int state, uint8_t gray_level) {
+    if (!widget) return;
+    gray_level = kgtk_quantize_eink_gray(gray_level);
+    if (state == 0) {
+        uint32_t old_key = kgtk_get_widget_rc_key(widget);
+        uint32_t new_key = (old_key & ~(0xFFu << 16)) | (1u << 7) | ((uint32_t)gray_level << 16);
+        kgtk_apply_rc_style_key(widget, new_key, old_key);
+        return;
+    }
+    fn_gtk_widget_modify_bg fn = (fn_gtk_widget_modify_bg)resolve_sym("gtk_widget_modify_bg");
+    if (fn) {
+        uint16_t c16 = ((uint16_t)gray_level << 8) | gray_level;
+        KGdkColor color = { 0, c16, c16, c16 };
+        fn(widget, state, &color);
+    }
+}
+
+void kgtk_widget_modify_fg_gray(KWidgetRef widget, int state, uint8_t gray_level) {
+    if (!widget) return;
+    gray_level = kgtk_quantize_eink_gray(gray_level);
+    if (state == 0) {
+        uint32_t old_key = kgtk_get_widget_rc_key(widget);
+        uint32_t new_key = (old_key & ~(0xFFu << 8)) | (1u << 6) | ((uint32_t)gray_level << 8);
+        kgtk_apply_rc_style_key(widget, new_key, old_key);
+        return;
+    }
+    fn_gtk_widget_modify_fg fn = (fn_gtk_widget_modify_fg)resolve_sym("gtk_widget_modify_fg");
+    if (fn) {
+        uint16_t c16 = ((uint16_t)gray_level << 8) | gray_level;
+        KGdkColor color = { 0, c16, c16, c16 };
+        fn(widget, state, &color);
+    }
+}
+
+void kgtk_widget_modify_font_string(KWidgetRef widget, const char* font_desc_str) {
+    if (!widget || !font_desc_str) return;
+    uint32_t font_idx = 63u;
+    void* desc = kgtk_lookup_or_create_font_desc(font_desc_str, &font_idx);
+    if (!desc) return;
+    if (font_idx < 63u) {
+        uint32_t old_key = kgtk_get_widget_rc_key(widget);
+        uint32_t new_key = (old_key & ~0x3Fu) | (font_idx & 0x3Fu);
+        kgtk_apply_rc_style_key(widget, new_key, old_key);
+        return;
+    }
+    fn_gtk_widget_modify_font modify_fn = (fn_gtk_widget_modify_font)resolve_sym("gtk_widget_modify_font");
+    if (modify_fn) modify_fn(widget, desc);
+}
+
+void kgtk_widget_set_font_and_fg(KWidgetRef widget, const char* font_desc_str, bool has_fg, uint8_t fg_gray) {
+    if (!widget) return;
+    uint32_t old_key = kgtk_get_widget_rc_key(widget);
+    uint32_t new_key = old_key;
+    if (font_desc_str) {
+        uint32_t font_idx = 63u;
+        void* desc = kgtk_lookup_or_create_font_desc(font_desc_str, &font_idx);
+        if (desc && font_idx < 63u) {
+            new_key = (new_key & ~0x3Fu) | (font_idx & 0x3Fu);
+        }
+    }
+    if (has_fg) {
+        uint8_t q_fg = kgtk_quantize_eink_gray(fg_gray);
+        new_key = (new_key & ~(0xFFu << 8)) | (1u << 6) | ((uint32_t)q_fg << 8);
+    }
+    kgtk_apply_rc_style_key(widget, new_key, old_key);
 }
 
 unsigned long kgtk_signal_connect(KWidgetRef instance, const char* detailed_signal, KSignalCallback callback, void* user_data) {
-#if !defined(_WIN32)
     fn_g_signal_connect_data fn = (fn_g_signal_connect_data)resolve_sym("g_signal_connect_data");
     if (fn && instance && detailed_signal && callback) {
         return fn(instance, detailed_signal, (void*)callback, user_data, NULL, 0);
     }
-#endif
     return 0;
 }
 
 // --- Cairo-Rendered Modern E-Ink Components ---
 
-#if !defined(_WIN32)
-static void kcairo_rounded_rect(void* cr, double x, double y, double w, double h, double r) {
-    fn_cairo_new_path new_path = (fn_cairo_new_path)resolve_sym("cairo_new_path");
-    fn_cairo_close_path close_path = (fn_cairo_close_path)resolve_sym("cairo_close_path");
-    fn_cairo_arc arc = (fn_cairo_arc)resolve_sym("cairo_arc");
-    fn_cairo_rectangle rect = (fn_cairo_rectangle)resolve_sym("cairo_rectangle");
-    if (!new_path || !rect || w <= 0 || h <= 0) return;
+typedef struct {
+    int initialized;
+    fn_gtk_widget_get_window get_window;
+    fn_gtk_widget_get_allocation get_allocation;
+    fn_gdk_cairo_create gdk_create;
+    fn_cairo_destroy destroy;
+    fn_cairo_save save;
+    fn_cairo_restore restore;
+    fn_cairo_translate translate;
+    fn_cairo_scale scale;
+    fn_cairo_set_source_rgb set_source_rgb;
+    fn_cairo_set_source_rgba set_source_rgba;
+    fn_cairo_set_line_width set_line_width;
+    fn_cairo_set_line_cap set_line_cap;
+    fn_cairo_set_line_join set_line_join;
+    fn_cairo_new_path new_path;
+    fn_cairo_close_path close_path;
+    fn_cairo_move_to move_to;
+    fn_cairo_line_to line_to;
+    fn_cairo_arc arc;
+    fn_cairo_rectangle rectangle;
+    fn_cairo_clip clip;
+    fn_cairo_fill fill;
+    fn_cairo_stroke stroke;
+} KCairoFuncTable;
 
-    double max_r = (w < h ? w : h) * 0.5;
-    if (r > max_r) r = max_r;
-    if (r <= 0.5 || !arc || !close_path) {
-        new_path(cr);
-        rect(cr, x, y, w, h);
-        return;
-    }
-    const double pi = 3.14159265358979323846;
-    new_path(cr);
-    arc(cr, x + w - r, y + r,     r, -0.5 * pi, 0.0);
-    arc(cr, x + w - r, y + h - r, r, 0.0,       0.5 * pi);
-    arc(cr, x + r,     y + h - r, r, 0.5 * pi,  pi);
-    arc(cr, x + r,     y + r,     r, pi,        1.5 * pi);
-    close_path(cr);
-}
+static KCairoFuncTable g_cairo = {0};
 
-static void kcairo_set_gray(void* cr, uint8_t gray) {
-    fn_cairo_set_source_rgb set_rgb = (fn_cairo_set_source_rgb)resolve_sym("cairo_set_source_rgb");
-    if (set_rgb) {
-        uint8_t q = kgtk_quantize_eink_gray(gray);
-        double g = (double)q / 255.0;
-        set_rgb(cr, g, g, g);
-    }
+static inline void kcairo_ensure_resolved(void) {
+    if (__builtin_expect(g_cairo.initialized != 0, 1)) return;
+    g_cairo.get_window = (fn_gtk_widget_get_window)resolve_sym("gtk_widget_get_window");
+    g_cairo.get_allocation = (fn_gtk_widget_get_allocation)resolve_sym("gtk_widget_get_allocation");
+    g_cairo.gdk_create = (fn_gdk_cairo_create)resolve_sym("gdk_cairo_create");
+    g_cairo.destroy = (fn_cairo_destroy)resolve_sym("cairo_destroy");
+    g_cairo.save = (fn_cairo_save)resolve_sym("cairo_save");
+    g_cairo.restore = (fn_cairo_restore)resolve_sym("cairo_restore");
+    g_cairo.translate = (fn_cairo_translate)resolve_sym("cairo_translate");
+    g_cairo.scale = (fn_cairo_scale)resolve_sym("cairo_scale");
+    g_cairo.set_source_rgb = (fn_cairo_set_source_rgb)resolve_sym("cairo_set_source_rgb");
+    g_cairo.set_source_rgba = (fn_cairo_set_source_rgba)resolve_sym("cairo_set_source_rgba");
+    g_cairo.set_line_width = (fn_cairo_set_line_width)resolve_sym("cairo_set_line_width");
+    g_cairo.set_line_cap = (fn_cairo_set_line_cap)resolve_sym("cairo_set_line_cap");
+    g_cairo.set_line_join = (fn_cairo_set_line_join)resolve_sym("cairo_set_line_join");
+    g_cairo.new_path = (fn_cairo_new_path)resolve_sym("cairo_new_path");
+    g_cairo.close_path = (fn_cairo_close_path)resolve_sym("cairo_close_path");
+    g_cairo.move_to = (fn_cairo_move_to)resolve_sym("cairo_move_to");
+    g_cairo.line_to = (fn_cairo_line_to)resolve_sym("cairo_line_to");
+    g_cairo.arc = (fn_cairo_arc)resolve_sym("cairo_arc");
+    g_cairo.rectangle = (fn_cairo_rectangle)resolve_sym("cairo_rectangle");
+    g_cairo.clip = (fn_cairo_clip)resolve_sym("cairo_clip");
+    g_cairo.fill = (fn_cairo_fill)resolve_sym("cairo_fill");
+    g_cairo.stroke = (fn_cairo_stroke)resolve_sym("cairo_stroke");
+    g_cairo.initialized = 1;
 }
 
 static void kcairo_clip_to_expose(void* cr, void* event) {
     if (!cr || !event) return;
-    fn_cairo_new_path new_path = (fn_cairo_new_path)resolve_sym("cairo_new_path");
-    fn_cairo_rectangle rect = (fn_cairo_rectangle)resolve_sym("cairo_rectangle");
-    fn_cairo_clip clip = (fn_cairo_clip)resolve_sym("cairo_clip");
-    if (new_path && rect && clip) {
+    kcairo_ensure_resolved();
+    if (g_cairo.new_path && g_cairo.rectangle && g_cairo.clip) {
         KGdkEventExpose* ev = (KGdkEventExpose*)event;
         if (ev->area.width > 0 && ev->area.height > 0) {
-            new_path(cr);
-            rect(cr, (double)ev->area.x, (double)ev->area.y, (double)ev->area.width, (double)ev->area.height);
-            clip(cr);
+            g_cairo.new_path(cr);
+            g_cairo.rectangle(cr, (double)ev->area.x, (double)ev->area.y, (double)ev->area.width, (double)ev->area.height);
+            g_cairo.clip(cr);
         }
     }
 }
 
-static void kcairo_uneven_rounded_rect(void* cr, double x, double y, double w, double h, double tl, double tr, double br, double bl) {
-    fn_cairo_new_path new_path = (fn_cairo_new_path)resolve_sym("cairo_new_path");
-    fn_cairo_close_path close_path = (fn_cairo_close_path)resolve_sym("cairo_close_path");
-    fn_cairo_arc arc = (fn_cairo_arc)resolve_sym("cairo_arc");
-    fn_cairo_move_to move_to = (fn_cairo_move_to)resolve_sym("cairo_move_to");
-    fn_cairo_line_to line_to = (fn_cairo_line_to)resolve_sym("cairo_line_to");
-    fn_cairo_rectangle rect = (fn_cairo_rectangle)resolve_sym("cairo_rectangle");
-    if (!new_path || !rect || w <= 0 || h <= 0) return;
+typedef struct {
+    KCairoExposeCallback on_expose;
+    void* user_data;
+    KIdleCallback on_destroy;
+    uint64_t cache_key;
+    uint8_t clear_bg_gray;
+} KCairoExposeBinding;
 
-    double max_r = (w < h ? w : h) * 0.5;
-    if (tl < 0) tl = 0; if (tl > max_r) tl = max_r;
-    if (tr < 0) tr = 0; if (tr > max_r) tr = max_r;
-    if (br < 0) br = 0; if (br > max_r) br = max_r;
-    if (bl < 0) bl = 0; if (bl > max_r) bl = max_r;
+#define KGTK_CAIRO_PIXMAP_CACHE_SIZE 128
+typedef struct {
+    uint64_t key;
+    void* pixmap;
+} KCairoPixmapCacheEntry;
+static KCairoPixmapCacheEntry g_cairo_pixmap_cache[KGTK_CAIRO_PIXMAP_CACHE_SIZE];
+static void* g_cached_blit_gc = NULL;
+static void* g_cached_blit_win = NULL;
 
-    if ((tl <= 0.5 && tr <= 0.5 && br <= 0.5 && bl <= 0.5) || !arc || !close_path || !move_to || !line_to) {
-        new_path(cr);
-        rect(cr, x, y, w, h);
-        return;
-    }
+typedef void* (KGTK_ABI *fn_gdk_pixmap_new)(void*, int, int, int);
+typedef void (KGTK_ABI *fn_gdk_draw_drawable)(void*, void*, void*, int, int, int, int, int, int);
 
-    const double pi = 3.14159265358979323846;
-    new_path(cr);
-    move_to(cr, x + tl, y);
-    if (tr > 0.5) {
-        arc(cr, x + w - tr, y + tr, tr, -0.5 * pi, 0.0);
-    } else {
-        line_to(cr, x + w, y);
+static void c_cairo_binding_destroy(void* data) {
+    KCairoExposeBinding* b = (KCairoExposeBinding*)data;
+    if (!b) return;
+    if (b->on_destroy && b->user_data) {
+        b->on_destroy(b->user_data);
     }
-    if (br > 0.5) {
-        arc(cr, x + w - br, y + h - br, br, 0.0, 0.5 * pi);
-    } else {
-        line_to(cr, x + w, y + h);
-    }
-    if (bl > 0.5) {
-        arc(cr, x + bl, y + h - bl, bl, 0.5 * pi, pi);
-    } else {
-        line_to(cr, x, y + h);
-    }
-    if (tl > 0.5) {
-        arc(cr, x + tl, y + tl, tl, pi, 1.5 * pi);
-    } else {
-        line_to(cr, x, y);
-    }
-    close_path(cr);
+    free(b);
 }
 
-static void kcairo_ellipse(void* cr, double x, double y, double w, double h) {
-    fn_cairo_save save = (fn_cairo_save)resolve_sym("cairo_save");
-    fn_cairo_restore restore = (fn_cairo_restore)resolve_sym("cairo_restore");
-    fn_cairo_translate translate = (fn_cairo_translate)resolve_sym("cairo_translate");
-    fn_cairo_scale scale = (fn_cairo_scale)resolve_sym("cairo_scale");
-    fn_cairo_new_path new_path = (fn_cairo_new_path)resolve_sym("cairo_new_path");
-    fn_cairo_close_path close_path = (fn_cairo_close_path)resolve_sym("cairo_close_path");
-    fn_cairo_arc arc = (fn_cairo_arc)resolve_sym("cairo_arc");
-    if (!save || !restore || !translate || !scale || !new_path || !arc || w <= 1.0 || h <= 1.0) {
-        kcairo_rounded_rect(cr, x, y, w, h, (w < h ? w : h) * 0.5);
+static int c_cairo_expose_trampoline(KWidgetRef widget, void* event, void* data) {
+    KCairoExposeBinding* b = (KCairoExposeBinding*)data;
+    if (!b || !b->on_expose || !widget) return 0;
+
+    kcairo_ensure_resolved();
+    if (!g_cairo.get_window || !g_cairo.get_allocation || !g_cairo.gdk_create || !g_cairo.destroy) return 0;
+
+    void* gdk_win = g_cairo.get_window(widget);
+    if (!gdk_win) return 0;
+
+    KGtkAllocation alloc = { 0, 0, 0, 0 };
+    g_cairo.get_allocation(widget, &alloc);
+    if (alloc.width <= 0 || alloc.height <= 0) return 0;
+
+    if (b->cache_key != 0 && alloc.width <= 256 && alloc.height <= 256) {
+        fn_gdk_pixmap_new pixmap_new = (fn_gdk_pixmap_new)resolve_sym("gdk_pixmap_new");
+        fn_gdk_draw_drawable draw_drawable = (fn_gdk_draw_drawable)resolve_sym("gdk_draw_drawable");
+        fn_gdk_gc_new gc_new = (fn_gdk_gc_new)resolve_sym("gdk_gc_new");
+        fn_g_object_unref unref = (fn_g_object_unref)resolve_sym("g_object_unref");
+        if (pixmap_new && draw_drawable && gc_new && g_cairo.new_path && g_cairo.rectangle && g_cairo.fill) {
+            uint8_t q_bg = kgtk_quantize_eink_gray(b->clear_bg_gray);
+            uint64_t full_key = b->cache_key
+                ^ ((uint64_t)(uint32_t)alloc.width << 48)
+                ^ ((uint64_t)(uint32_t)alloc.height << 36)
+                ^ ((uint64_t)q_bg << 28);
+            if (full_key == 0) full_key = 1;
+
+            uint32_t mask = KGTK_CAIRO_PIXMAP_CACHE_SIZE - 1;
+            uint32_t idx = (uint32_t)((full_key ^ (full_key >> 27)) * 2654435761u) & mask;
+            void* pixmap = NULL;
+            for (uint32_t probes = 0; probes < 8; ++probes) {
+                KCairoPixmapCacheEntry* e = &g_cairo_pixmap_cache[(idx + probes) & mask];
+                if (!e->key) break;
+                if (e->key == full_key && e->pixmap) {
+                    pixmap = e->pixmap;
+                    break;
+                }
+            }
+
+            if (!pixmap) {
+                pixmap = pixmap_new(gdk_win, alloc.width, alloc.height, -1);
+                if (pixmap) {
+                    void* pcr = g_cairo.gdk_create(pixmap);
+                    if (pcr) {
+                        kcairo_set_gray(pcr, q_bg);
+                        g_cairo.new_path(pcr);
+                        g_cairo.rectangle(pcr, 0.0, 0.0, (double)alloc.width, (double)alloc.height);
+                        g_cairo.fill(pcr);
+                        b->on_expose(widget, pcr, 0.0, 0.0, (double)alloc.width, (double)alloc.height, b->user_data);
+                        g_cairo.destroy(pcr);
+
+                        uint32_t store_slot = idx;
+                        for (uint32_t probes = 0; probes < 8; ++probes) {
+                            uint32_t s = (idx + probes) & mask;
+                            if (!g_cairo_pixmap_cache[s].key) {
+                                store_slot = s;
+                                break;
+                            }
+                        }
+                        if (g_cairo_pixmap_cache[store_slot].pixmap && unref) {
+                            unref(g_cairo_pixmap_cache[store_slot].pixmap);
+                        }
+                        g_cairo_pixmap_cache[store_slot].key = full_key;
+                        g_cairo_pixmap_cache[store_slot].pixmap = pixmap;
+                    } else {
+                        if (unref) unref(pixmap);
+                        pixmap = NULL;
+                    }
+                }
+            }
+
+            if (pixmap) {
+                if (g_cached_blit_win != gdk_win || !g_cached_blit_gc) {
+                    if (g_cached_blit_gc && unref) unref(g_cached_blit_gc);
+                    g_cached_blit_gc = gc_new(gdk_win);
+                    g_cached_blit_win = gdk_win;
+                }
+                if (g_cached_blit_gc) {
+                    int x0 = alloc.x;
+                    int y0 = alloc.y;
+                    int x1 = alloc.x + alloc.width;
+                    int y1 = alloc.y + alloc.height;
+                    if (event) {
+                        KGdkEventExpose* ev = (KGdkEventExpose*)event;
+                        if (ev->area.width > 0 && ev->area.height > 0) {
+                            if (ev->area.x > x0) x0 = ev->area.x;
+                            if (ev->area.y > y0) y0 = ev->area.y;
+                            if (ev->area.x + ev->area.width < x1) x1 = ev->area.x + ev->area.width;
+                            if (ev->area.y + ev->area.height < y1) y1 = ev->area.y + ev->area.height;
+                        }
+                    }
+                    if (x1 > x0 && y1 > y0) {
+                        draw_drawable(gdk_win, g_cached_blit_gc, pixmap, x0 - alloc.x, y0 - alloc.y, x0, y0, x1 - x0, y1 - y0);
+                    }
+                    return 0;
+                }
+            }
+        }
+    }
+
+    void* cr = g_cairo.gdk_create(gdk_win);
+    if (!cr) return 0;
+    kcairo_clip_to_expose(cr, event);
+    b->on_expose(widget, cr, (double)alloc.x, (double)alloc.y, (double)alloc.width, (double)alloc.height, b->user_data);
+    g_cairo.destroy(cr);
+    return 0;
+}
+
+void kgtk_connect_cairo_expose_cached(
+    KWidgetRef widget,
+    uint64_t cache_key,
+    uint8_t clear_bg_gray,
+    KCairoExposeCallback on_expose,
+    void* user_data,
+    KIdleCallback on_destroy
+) {
+    fn_g_signal_connect_data conn = (fn_g_signal_connect_data)resolve_sym("g_signal_connect_data");
+    fn_g_object_set_data_full set_data = (fn_g_object_set_data_full)resolve_sym("g_object_set_data_full");
+    if (!widget || !on_expose || !conn) {
+        if (on_destroy && user_data) on_destroy(user_data);
+        return;
+    }
+    KCairoExposeBinding* b = (KCairoExposeBinding*)malloc(sizeof(KCairoExposeBinding));
+    if (!b) {
+        if (on_destroy && user_data) on_destroy(user_data);
+        return;
+    }
+    b->on_expose = on_expose;
+    b->user_data = user_data;
+    b->on_destroy = on_destroy;
+    b->cache_key = cache_key;
+    b->clear_bg_gray = clear_bg_gray;
+    if (set_data) {
+        set_data(widget, "kindle-cairo-expose-binding", b, c_cairo_binding_destroy);
+    }
+    conn(widget, "expose-event", (void*)c_cairo_expose_trampoline, b, NULL, 0);
+}
+
+void kgtk_connect_cairo_expose(
+    KWidgetRef widget,
+    KCairoExposeCallback on_expose,
+    void* user_data,
+    KIdleCallback on_destroy
+) {
+    kgtk_connect_cairo_expose_cached(widget, 0, 0xFF, on_expose, user_data, on_destroy);
+}
+
+void kcairo_rounded_rect(KCairoRef cr, double x, double y, double w, double h, double r) {
+    kcairo_ensure_resolved();
+    if (!cr || !g_cairo.new_path || !g_cairo.rectangle || w <= 0 || h <= 0) return;
+
+    double max_r = (w < h ? w : h) * 0.5;
+    if (r > max_r) r = max_r;
+    if (r <= 0.5 || !g_cairo.arc || !g_cairo.close_path) {
+        g_cairo.new_path(cr);
+        g_cairo.rectangle(cr, x, y, w, h);
         return;
     }
     const double pi = 3.14159265358979323846;
-    new_path(cr);
-    save(cr);
-    translate(cr, x + w * 0.5, y + h * 0.5);
-    scale(cr, w * 0.5, h * 0.5);
-    arc(cr, 0.0, 0.0, 1.0, 0.0, 2.0 * pi);
-    if (close_path) close_path(cr);
-    restore(cr);
+    g_cairo.new_path(cr);
+    g_cairo.arc(cr, x + w - r, y + r,     r, -0.5 * pi, 0.0);
+    g_cairo.arc(cr, x + w - r, y + h - r, r, 0.0,       0.5 * pi);
+    g_cairo.arc(cr, x + r,     y + h - r, r, 0.5 * pi,  pi);
+    g_cairo.arc(cr, x + r,     y + r,     r, pi,        1.5 * pi);
+    g_cairo.close_path(cr);
+}
+
+void kcairo_set_gray(KCairoRef cr, uint8_t gray) {
+    kcairo_ensure_resolved();
+    if (cr && g_cairo.set_source_rgb) {
+        uint8_t q = kgtk_quantize_eink_gray(gray);
+        double g = (double)q / 255.0;
+        g_cairo.set_source_rgb(cr, g, g, g);
+    }
+}
+
+void kcairo_set_gray_alpha(KCairoRef cr, uint8_t gray, double alpha) {
+    kcairo_ensure_resolved();
+    if (cr && g_cairo.set_source_rgba) {
+        double g = (double)gray / 255.0;
+        g_cairo.set_source_rgba(cr, g, g, g, alpha);
+    }
+}
+
+void kcairo_set_line_width(KCairoRef cr, double width) {
+    kcairo_ensure_resolved();
+    if (cr && g_cairo.set_line_width) g_cairo.set_line_width(cr, width);
+}
+
+void kcairo_set_line_round(KCairoRef cr) {
+    kcairo_ensure_resolved();
+    if (cr && g_cairo.set_line_cap) g_cairo.set_line_cap(cr, 1);
+    if (cr && g_cairo.set_line_join) g_cairo.set_line_join(cr, 1);
+}
+
+void kcairo_new_path(KCairoRef cr) {
+    kcairo_ensure_resolved();
+    if (cr && g_cairo.new_path) g_cairo.new_path(cr);
+}
+
+void kcairo_close_path(KCairoRef cr) {
+    kcairo_ensure_resolved();
+    if (cr && g_cairo.close_path) g_cairo.close_path(cr);
+}
+
+void kcairo_move_to(KCairoRef cr, double x, double y) {
+    kcairo_ensure_resolved();
+    if (cr && g_cairo.move_to) g_cairo.move_to(cr, x, y);
+}
+
+void kcairo_line_to(KCairoRef cr, double x, double y) {
+    kcairo_ensure_resolved();
+    if (cr && g_cairo.line_to) g_cairo.line_to(cr, x, y);
+}
+
+void kcairo_arc(KCairoRef cr, double xc, double yc, double radius, double angle1, double angle2) {
+    kcairo_ensure_resolved();
+    if (cr && g_cairo.arc) g_cairo.arc(cr, xc, yc, radius, angle1, angle2);
+}
+
+void kcairo_rectangle(KCairoRef cr, double x, double y, double width, double height) {
+    kcairo_ensure_resolved();
+    if (cr && g_cairo.rectangle) g_cairo.rectangle(cr, x, y, width, height);
+}
+
+void kcairo_fill(KCairoRef cr) {
+    kcairo_ensure_resolved();
+    if (cr && g_cairo.fill) g_cairo.fill(cr);
+}
+
+void kcairo_stroke(KCairoRef cr) {
+    kcairo_ensure_resolved();
+    if (cr && g_cairo.stroke) g_cairo.stroke(cr);
 }
 
 typedef struct {
@@ -2669,20 +2638,166 @@ typedef struct {
     void* user_data;
 } KStyledBoxState;
 
-static void kcairo_box_path(void* cr, const KStyledBoxState* st, double x, double y, double w, double h, double inset) {
-    if (!st) return;
+static inline int kcairo_corner_inset_px(int r, int dy) {
+    if (r <= 1 || dy < 0 || dy >= r) return 0;
+    int cy = r - dy;
+    int limit = r * r + r;
+    int cy2 = cy * cy;
+    int dx = r;
+    while (dx > 0 && (dx * dx + cy2 > limit)) {
+        dx--;
+    }
+    return r - dx;
+}
+
+static void kcairo_box_corner_radii(const KStyledBoxState* st, int iw, int ih, int* out_tl, int* out_tr, int* out_br, int* out_bl) {
+    int max_r = (iw < ih ? iw : ih) / 2;
+    int tl = 0, tr = 0, br = 0, bl = 0;
     if (st->is_ellipse) {
-        kcairo_ellipse(cr, x, y, w, h);
+        tl = tr = br = bl = max_r;
     } else if (st->has_uneven_corners) {
-        double tl = (double)st->corner_tl - inset;
-        double tr = (double)st->corner_tr - inset;
-        double br = (double)st->corner_br - inset;
-        double bl = (double)st->corner_bl - inset;
-        kcairo_uneven_rounded_rect(cr, x, y, w, h, tl, tr, br, bl);
+        tl = st->corner_tl;
+        tr = st->corner_tr;
+        br = st->corner_br;
+        bl = st->corner_bl;
     } else {
-        double r = (double)st->corner_radius - inset;
-        if (r < 0.0) r = 0.0;
-        kcairo_rounded_rect(cr, x, y, w, h, r);
+        tl = tr = br = bl = st->corner_radius;
+    }
+    if (tl < 0) tl = 0; if (tl > max_r) tl = max_r;
+    if (tr < 0) tr = 0; if (tr > max_r) tr = max_r;
+    if (br < 0) br = 0; if (br > max_r) br = max_r;
+    if (bl < 0) bl = 0; if (bl > max_r) bl = max_r;
+    *out_tl = tl;
+    *out_tr = tr;
+    *out_br = br;
+    *out_bl = bl;
+}
+
+/* Emits 100% integer-aligned axis-aligned cairo_rectangle subpaths for a rounded box
+ * so Cairo's Xlib backend uses XFillRectangles directly without XGetImage/XPutImage fallbacks. */
+static void kcairo_rectilinear_rounded_box_path(void* cr, int ix, int iy, int iw, int ih, int rtl, int rtr, int rbr, int rbl) {
+    if (!g_cairo.new_path || !g_cairo.rectangle || iw <= 0 || ih <= 0) return;
+    g_cairo.new_path(cr);
+    int r_top = rtl > rtr ? rtl : rtr;
+    int r_bot = rbl > rbr ? rbl : rbr;
+    if (r_top + r_bot > ih) {
+        r_top = ih / 2;
+        r_bot = ih - r_top;
+    }
+    if (r_top <= 1 && r_bot <= 1) {
+        g_cairo.rectangle(cr, (double)ix, (double)iy, (double)iw, (double)ih);
+        return;
+    }
+
+    int run_y = -1, run_l = 0, run_w = 0, run_h = 0;
+    for (int dy = 0; dy < r_top; ++dy) {
+        int l = (dy < rtl) ? kcairo_corner_inset_px(rtl, dy) : 0;
+        int r = (dy < rtr) ? kcairo_corner_inset_px(rtr, dy) : 0;
+        int rw = iw - l - r;
+        if (rw <= 0) continue;
+        if (run_h > 0 && l == run_l && rw == run_w && (iy + dy) == (run_y + run_h)) {
+            run_h++;
+        } else {
+            if (run_h > 0) g_cairo.rectangle(cr, (double)(ix + run_l), (double)run_y, (double)run_w, (double)run_h);
+            run_y = iy + dy;
+            run_l = l;
+            run_w = rw;
+            run_h = 1;
+        }
+    }
+    if (run_h > 0) {
+        g_cairo.rectangle(cr, (double)(ix + run_l), (double)run_y, (double)run_w, (double)run_h);
+        run_h = 0;
+    }
+
+    int mid_h = ih - r_top - r_bot;
+    if (mid_h > 0) {
+        g_cairo.rectangle(cr, (double)ix, (double)(iy + r_top), (double)iw, (double)mid_h);
+    }
+
+    for (int dy = r_bot - 1; dy >= 0; --dy) {
+        int row_y = iy + ih - 1 - dy;
+        int l = (dy < rbl) ? kcairo_corner_inset_px(rbl, dy) : 0;
+        int r = (dy < rbr) ? kcairo_corner_inset_px(rbr, dy) : 0;
+        int rw = iw - l - r;
+        if (rw <= 0) continue;
+        if (run_h > 0 && l == run_l && rw == run_w && row_y == (run_y + run_h)) {
+            run_h++;
+        } else {
+            if (run_h > 0) g_cairo.rectangle(cr, (double)(ix + run_l), (double)run_y, (double)run_w, (double)run_h);
+            run_y = row_y;
+            run_l = l;
+            run_w = rw;
+            run_h = 1;
+        }
+    }
+    if (run_h > 0) {
+        g_cairo.rectangle(cr, (double)(ix + run_l), (double)run_y, (double)run_w, (double)run_h);
+    }
+}
+
+/* Emits 100% integer-aligned axis-aligned cairo_rectangle subpaths for a rounded border of width bw
+ * (outer rounded box minus inner rounded box) so Cairo uses XFillRectangles with zero XGetImage/XPutImage. */
+static void kcairo_rectilinear_rounded_border_path(void* cr, int ix, int iy, int iw, int ih, int rtl, int rtr, int rbr, int rbl, int bw) {
+    if (!g_cairo.new_path || !g_cairo.rectangle || iw <= 0 || ih <= 0 || bw <= 0) return;
+    if (bw * 2 >= iw || bw * 2 >= ih) {
+        kcairo_rectilinear_rounded_box_path(cr, ix, iy, iw, ih, rtl, rtr, rbr, rbl);
+        return;
+    }
+    g_cairo.new_path(cr);
+    int r_top = rtl > rtr ? rtl : rtr;
+    int r_bot = rbl > rbr ? rbl : rbr;
+    if (r_top < bw) r_top = bw;
+    if (r_bot < bw) r_bot = bw;
+    if (r_top + r_bot > ih) {
+        r_top = ih / 2;
+        r_bot = ih - r_top;
+    }
+
+    int itl = rtl > bw ? (rtl - bw) : 0;
+    int itr = rtr > bw ? (rtr - bw) : 0;
+    int ibr = rbr > bw ? (rbr - bw) : 0;
+    int ibl = rbl > bw ? (rbl - bw) : 0;
+
+    for (int ry = 0; ry < r_top; ++ry) {
+        int out_l = (ry < rtl) ? kcairo_corner_inset_px(rtl, ry) : 0;
+        int out_r = (ry < rtr) ? kcairo_corner_inset_px(rtr, ry) : 0;
+        if (ry < bw) {
+            int rw = iw - out_l - out_r;
+            if (rw > 0) g_cairo.rectangle(cr, (double)(ix + out_l), (double)(iy + ry), (double)rw, 1.0);
+        } else {
+            int iry = ry - bw;
+            int in_l = bw + ((iry < itl) ? kcairo_corner_inset_px(itl, iry) : 0);
+            int in_r = bw + ((iry < itr) ? kcairo_corner_inset_px(itr, iry) : 0);
+            int lw = in_l - out_l;
+            int rw = in_r - out_r;
+            if (lw > 0) g_cairo.rectangle(cr, (double)(ix + out_l), (double)(iy + ry), (double)lw, 1.0);
+            if (rw > 0) g_cairo.rectangle(cr, (double)(ix + iw - in_r), (double)(iy + ry), (double)rw, 1.0);
+        }
+    }
+
+    int mid_h = ih - r_top - r_bot;
+    if (mid_h > 0) {
+        g_cairo.rectangle(cr, (double)ix, (double)(iy + r_top), (double)bw, (double)mid_h);
+        g_cairo.rectangle(cr, (double)(ix + iw - bw), (double)(iy + r_top), (double)bw, (double)mid_h);
+    }
+
+    for (int dy = r_bot - 1; dy >= 0; --dy) {
+        int row_y = iy + ih - 1 - dy;
+        int out_l = (dy < rbl) ? kcairo_corner_inset_px(rbl, dy) : 0;
+        int out_r = (dy < rbr) ? kcairo_corner_inset_px(rbr, dy) : 0;
+        if (dy < bw) {
+            int rw = iw - out_l - out_r;
+            if (rw > 0) g_cairo.rectangle(cr, (double)(ix + out_l), (double)row_y, (double)rw, 1.0);
+        } else {
+            int idy = dy - bw;
+            int in_l = bw + ((idy < ibl) ? kcairo_corner_inset_px(ibl, idy) : 0);
+            int in_r = bw + ((idy < ibr) ? kcairo_corner_inset_px(ibr, idy) : 0);
+            int lw = in_l - out_l;
+            int rw = in_r - out_r;
+            if (lw > 0) g_cairo.rectangle(cr, (double)(ix + out_l), (double)row_y, (double)lw, 1.0);
+            if (rw > 0) g_cairo.rectangle(cr, (double)(ix + iw - in_r), (double)row_y, (double)rw, 1.0);
+        }
     }
 }
 
@@ -2690,48 +2805,43 @@ static int c_styled_box_expose(KWidgetRef widget, void* event, void* data) {
     KStyledBoxState* st = (KStyledBoxState*)data;
     if (!st || !widget) return 0;
 
-    fn_gtk_widget_get_window get_win = (fn_gtk_widget_get_window)resolve_sym("gtk_widget_get_window");
-    fn_gdk_cairo_create cairo_create = (fn_gdk_cairo_create)resolve_sym("gdk_cairo_create");
-    fn_cairo_destroy cairo_destroy = (fn_cairo_destroy)resolve_sym("cairo_destroy");
-    fn_cairo_fill fill = (fn_cairo_fill)resolve_sym("cairo_fill");
-    fn_cairo_stroke stroke = (fn_cairo_stroke)resolve_sym("cairo_stroke");
-    fn_cairo_set_line_width set_lw = (fn_cairo_set_line_width)resolve_sym("cairo_set_line_width");
-    if (!get_win || !cairo_create || !cairo_destroy || !fill || !stroke || !set_lw) return 0;
+    kcairo_ensure_resolved();
+    if (!g_cairo.get_window || !g_cairo.gdk_create || !g_cairo.destroy || !g_cairo.fill) return 0;
 
-    void* gdk_win = get_win(widget);
+    void* gdk_win = g_cairo.get_window(widget);
     if (!gdk_win) return 0;
 
     KGtkAllocation alloc = { 0, 0, 0, 0 };
     kgtk_widget_get_size(widget, &alloc.width, &alloc.height);
-    fn_gtk_widget_get_allocation get_alloc = (fn_gtk_widget_get_allocation)resolve_sym("gtk_widget_get_allocation");
-    if (get_alloc) {
-        get_alloc(widget, &alloc);
+    if (g_cairo.get_allocation) {
+        g_cairo.get_allocation(widget, &alloc);
     }
     if (alloc.width <= 1 || alloc.height <= 1) return 0;
 
-    void* cr = cairo_create(gdk_win);
+    void* cr = g_cairo.gdk_create(gdk_win);
     if (!cr) return 0;
     kcairo_clip_to_expose(cr, event);
 
     int abs_sx = st->shadow_x < 0 ? -st->shadow_x : st->shadow_x;
     int abs_sy = st->shadow_y < 0 ? -st->shadow_y : st->shadow_y;
-    double box_w = (double)(alloc.width - abs_sx);
-    double box_h = (double)(alloc.height - abs_sy);
-    double box_x = (double)alloc.x + (st->shadow_x < 0 ? abs_sx : 0);
-    double box_y = (double)alloc.y + (st->shadow_y < 0 ? abs_sy : 0);
+    int box_w = alloc.width - abs_sx;
+    int box_h = alloc.height - abs_sy;
+    int box_x = alloc.x + (st->shadow_x < 0 ? abs_sx : 0);
+    int box_y = alloc.y + (st->shadow_y < 0 ? abs_sy : 0);
+
+    int rtl = 0, rtr = 0, rbr = 0, rbl = 0;
+    kcairo_box_corner_radii(st, box_w, box_h, &rtl, &rtr, &rbr, &rbl);
 
     if ((abs_sx > 0 || abs_sy > 0) && box_w > 2 && box_h > 2) {
-        double sx = box_x + st->shadow_x;
-        double sy = box_y + st->shadow_y;
-        kcairo_box_path(cr, st, sx, sy, box_w, box_h, 0.0);
+        kcairo_rectilinear_rounded_box_path(cr, box_x + st->shadow_x, box_y + st->shadow_y, box_w, box_h, rtl, rtr, rbr, rbl);
         kcairo_set_gray(cr, st->shadow_gray);
-        fill(cr);
+        g_cairo.fill(cr);
     }
 
     if (st->is_interactive && st->is_pressed && (abs_sx > 0 || abs_sy > 0)) {
         // Tactile shift toward the shadow when pressed
-        box_x += (st->shadow_x > 0 ? 1.5 : 0.0);
-        box_y += (st->shadow_y > 0 ? 1.5 : 0.0);
+        box_x += (st->shadow_x > 0 ? 1 : 0);
+        box_y += (st->shadow_y > 0 ? 1 : 0);
     }
 
     if (st->has_bg || (st->is_interactive && st->is_pressed)) {
@@ -2743,21 +2853,19 @@ static int c_styled_box_expose(KWidgetRef widget, void* event, void* data) {
                 effective_bg = (uint8_t)(effective_bg + 56);
             }
         }
-        kcairo_box_path(cr, st, box_x, box_y, box_w, box_h, 0.0);
+        kcairo_rectilinear_rounded_box_path(cr, box_x, box_y, box_w, box_h, rtl, rtr, rbr, rbl);
         kcairo_set_gray(cr, effective_bg);
-        fill(cr);
+        g_cairo.fill(cr);
     }
 
     if (st->border_width > 0) {
-        double bw = (double)st->border_width + (st->is_interactive && st->is_pressed ? 1.0 : 0.0);
-        double half = bw * 0.5;
-        kcairo_box_path(cr, st, box_x + half, box_y + half, box_w - bw, box_h - bw, half);
-        set_lw(cr, bw);
+        int bw = st->border_width + (st->is_interactive && st->is_pressed ? 1 : 0);
+        kcairo_rectilinear_rounded_border_path(cr, box_x, box_y, box_w, box_h, rtl, rtr, rbr, rbl, bw);
         kcairo_set_gray(cr, st->border_gray);
-        stroke(cr);
+        g_cairo.fill(cr);
     }
 
-    cairo_destroy(cr);
+    g_cairo.destroy(cr);
     return 0; // Let GtkContainer propagate expose to children on top
 }
 
@@ -2778,28 +2886,22 @@ static int c_styled_button_press(KWidgetRef widget, void* event, void* data) {
         return 1;
     }
     st->is_pressed = true;
-    kgtk_widget_queue_draw(widget);
     return 1;
 }
 
 static int c_styled_button_motion(KWidgetRef widget, void* event, void* data) {
+    (void)widget;
     KStyledBoxState* st = (KStyledBoxState*)data;
     if (!st || !st->is_interactive || !event) return 0;
     if (!c_event_has_button1_mask(event)) {
         st->dragged_scroll = false;
-        if (st->is_pressed) {
-            st->is_pressed = false;
-            kgtk_widget_queue_draw(widget);
-        }
+        st->is_pressed = false;
         c_scroll_drag_end();
         return 0;
     }
     if (c_scroll_drag_update(event)) {
         st->dragged_scroll = true;
-        if (st->is_pressed) {
-            st->is_pressed = false;
-            kgtk_widget_queue_draw(widget);
-        }
+        st->is_pressed = false;
         return 1;
     }
     return (st->is_pressed || st->dragged_scroll || g_scroll_drag.active) ? 1 : 0;
@@ -2824,16 +2926,6 @@ static int c_styled_button_release(KWidgetRef widget, void* event, void* data) {
     st->dragged_scroll = false;
     if (was_pressed && !was_dragged && st->is_enabled && st->on_click) {
         st->on_click(widget, st->user_data);
-        if (!g_has_pending_idle) {
-            kgtk_widget_queue_draw(widget);
-        } else {
-            /* A rebuild is pending and would normally repaint this button. If the renderer applies that
-             * rebuild in place instead, the widget survives and must be redrawn (un-pressed) by the
-             * renderer: remember it. */
-            g_suppressed_redraw_widget = widget;
-        }
-    } else if (was_pressed) {
-        kgtk_widget_queue_draw(widget);
     }
     return 1;
 }
@@ -2875,8 +2967,12 @@ static KWidgetRef create_styled_box_internal(
     int eff_left   = pad_left   + bw + (shadow_x < 0 ? abs_sx : 0);
     int eff_right  = pad_right  + bw + (shadow_x > 0 ? abs_sx : 0);
 
+    typedef void (KGTK_ABI *fn_gtk_widget_set_redraw_on_allocate)(KWidgetRef, int);
+    fn_gtk_widget_set_redraw_on_allocate set_redraw = (fn_gtk_widget_set_redraw_on_allocate)resolve_sym("gtk_widget_set_redraw_on_allocate");
+
     KWidgetRef align = kgtk_alignment_new(xalign, yalign, xscale, yscale);
     if (!align) return child;
+    if (set_redraw) set_redraw(align, 1);
     kgtk_alignment_set_padding(align, eff_top, eff_bottom, eff_left, eff_right);
     if (child) kgtk_container_add(align, child);
 
@@ -2886,6 +2982,7 @@ static KWidgetRef create_styled_box_internal(
         if (eb) {
             if (set_vis) set_vis(eb, 0);
             if (set_above) set_above(eb, 1);
+            if (set_redraw) set_redraw(eb, 1);
             if (add_events) add_events(eb, 4 | 256 | 512); // GDK_POINTER_MOTION_MASK | GDK_BUTTON_PRESS_MASK | GDK_BUTTON_RELEASE_MASK
             kgtk_container_add(eb, align);
             host = eb;
@@ -2931,7 +3028,6 @@ static KWidgetRef create_styled_box_internal(
 
     return host;
 }
-#endif
 
 KWidgetRef kgtk_styled_container_new(
     KWidgetRef child,
@@ -2952,15 +3048,11 @@ KWidgetRef kgtk_styled_container_new(
     float xscale,
     float yscale
 ) {
-#if !defined(_WIN32)
     return create_styled_box_internal(
         child, has_bg, bg_gray, border_width, border_gray, corner_radius,
         shadow_x, shadow_y, shadow_gray, pad_top, pad_bottom, pad_left, pad_right,
         xalign, yalign, xscale, yscale, false, false, NULL, NULL
     );
-#else
-    return child;
-#endif
 }
 
 void kgtk_styled_box_set_shape(
@@ -2971,7 +3063,6 @@ void kgtk_styled_box_set_shape(
     int bl,
     bool is_ellipse
 ) {
-#if !defined(_WIN32)
     if (!widget) return;
     fn_g_object_get_data get_data = (fn_g_object_get_data)resolve_sym("g_object_get_data");
     if (!get_data) return;
@@ -2985,9 +3076,6 @@ void kgtk_styled_box_set_shape(
         st->corner_br = br > 0 ? kgtk_scale_px(br) : 0;
         st->corner_bl = bl > 0 ? kgtk_scale_px(bl) : 0;
     }
-#else
-    (void)widget; (void)tl; (void)tr; (void)br; (void)bl; (void)is_ellipse;
-#endif
 }
 
 KWidgetRef kgtk_styled_button_new(
@@ -3012,174 +3100,15 @@ KWidgetRef kgtk_styled_button_new(
     KSignalCallback on_click,
     void* user_data
 ) {
-#if !defined(_WIN32)
     return create_styled_box_internal(
         child, has_bg, bg_gray, border_width, border_gray, corner_radius,
         shadow_x, shadow_y, shadow_gray, pad_top, pad_bottom, pad_left, pad_right,
         xalign, yalign, xscale, yscale, true, is_enabled, on_click, user_data
     );
-#else
-    return child;
-#endif
-}
-
-// --- Custom Cairo Switch / Checkbox ---
-
-#if !defined(_WIN32)
-typedef struct {
-    bool is_on;
-    int style_mode; // 0 = switch, 1 = checkbox
-    uint8_t fg_gray;
-    uint8_t bg_gray;
-    uint8_t track_gray;
-} KCustomSwitchState;
-
-static int c_custom_switch_expose(KWidgetRef widget, void* event, void* data) {
-    KCustomSwitchState* st = (KCustomSwitchState*)data;
-    if (!st || !widget) return 0;
-
-    fn_gtk_widget_get_window get_win = (fn_gtk_widget_get_window)resolve_sym("gtk_widget_get_window");
-    fn_gtk_widget_get_allocation get_alloc = (fn_gtk_widget_get_allocation)resolve_sym("gtk_widget_get_allocation");
-    fn_gdk_cairo_create cairo_create = (fn_gdk_cairo_create)resolve_sym("gdk_cairo_create");
-    fn_cairo_destroy cairo_destroy = (fn_cairo_destroy)resolve_sym("cairo_destroy");
-    fn_cairo_fill fill = (fn_cairo_fill)resolve_sym("cairo_fill");
-    fn_cairo_stroke stroke = (fn_cairo_stroke)resolve_sym("cairo_stroke");
-    fn_cairo_set_line_width set_lw = (fn_cairo_set_line_width)resolve_sym("cairo_set_line_width");
-    fn_cairo_set_line_cap set_cap = (fn_cairo_set_line_cap)resolve_sym("cairo_set_line_cap");
-    fn_cairo_set_line_join set_join = (fn_cairo_set_line_join)resolve_sym("cairo_set_line_join");
-    fn_cairo_new_path new_path = (fn_cairo_new_path)resolve_sym("cairo_new_path");
-    fn_cairo_arc arc = (fn_cairo_arc)resolve_sym("cairo_arc");
-    fn_cairo_move_to move_to = (fn_cairo_move_to)resolve_sym("cairo_move_to");
-    fn_cairo_line_to line_to = (fn_cairo_line_to)resolve_sym("cairo_line_to");
-
-    if (!get_win || !get_alloc || !cairo_create || !cairo_destroy || !fill || !stroke || !set_lw) return 0;
-    void* gdk_win = get_win(widget);
-    if (!gdk_win) return 0;
-
-    KGtkAllocation alloc = { 0, 0, 0, 0 };
-    get_alloc(widget, &alloc);
-    if (alloc.width <= 4 || alloc.height <= 4) return 0;
-
-    void* cr = cairo_create(gdk_win);
-    if (!cr) return 0;
-    kcairo_clip_to_expose(cr, event);
-
-    const double pi = 3.14159265358979323846;
-    double s = kgtk_get_ui_scale();
-    double ox = (double)alloc.x;
-    double oy = (double)alloc.y;
-    double w = (double)alloc.width;
-    double h = (double)alloc.height;
-    double inset = 6.0 * s;
-    if (inset < 2.0) inset = 2.0;
-    double lw = 3.0 * s;
-    if (lw < 1.5) lw = 1.5;
-
-    if (st->style_mode == 1) {
-        // Crisp rounded checkbox
-        double sz = (w < h ? w : h) - inset;
-        double x = ox + (w - sz) * 0.5;
-        double y = oy + (h - sz) * 0.5;
-        double rad = 12.0 * s;
-        if (rad < 4.0) rad = 4.0;
-        kcairo_rounded_rect(cr, x, y, sz, sz, rad);
-        kcairo_set_gray(cr, st->is_on ? st->fg_gray : st->bg_gray);
-        fill(cr);
-
-        kcairo_rounded_rect(cr, x, y, sz, sz, rad);
-        set_lw(cr, lw);
-        kcairo_set_gray(cr, st->fg_gray);
-        stroke(cr);
-
-        if (st->is_on && new_path && move_to && line_to) {
-            if (set_cap) set_cap(cr, 1);   // CAIRO_LINE_CAP_ROUND
-            if (set_join) set_join(cr, 1); // CAIRO_LINE_JOIN_ROUND
-            new_path(cr);
-            move_to(cr, x + sz * 0.24, y + sz * 0.52);
-            line_to(cr, x + sz * 0.44, y + sz * 0.72);
-            line_to(cr, x + sz * 0.78, y + sz * 0.30);
-            double clw = 4.5 * s;
-            if (clw < 2.0) clw = 2.0;
-            set_lw(cr, clw);
-            kcairo_set_gray(cr, st->bg_gray);
-            stroke(cr);
-        }
-    } else {
-        // Capsule switch
-        double sw = w - inset;
-        double sh = h - inset;
-        double sx = ox + inset * 0.5;
-        double sy = oy + inset * 0.5;
-        double r = sh * 0.5;
-
-        kcairo_rounded_rect(cr, sx, sy, sw, sh, r);
-        kcairo_set_gray(cr, st->is_on ? st->fg_gray : st->track_gray);
-        fill(cr);
-
-        kcairo_rounded_rect(cr, sx, sy, sw, sh, r);
-        set_lw(cr, lw);
-        kcairo_set_gray(cr, st->fg_gray);
-        stroke(cr);
-
-        if (new_path && arc) {
-            double thumb_pad = 7.0 * s;
-            if (thumb_pad < 2.5) thumb_pad = 2.5;
-            double thumb_r = r - thumb_pad;
-            if (thumb_r < 3.0) thumb_r = 3.0;
-            double cx = st->is_on ? (sx + sw - r) : (sx + r);
-            double cy = sy + r;
-            new_path(cr);
-            arc(cr, cx, cy, thumb_r, 0.0, 2.0 * pi);
-            kcairo_set_gray(cr, st->is_on ? st->bg_gray : st->fg_gray);
-            fill(cr);
-        }
-    }
-
-    cairo_destroy(cr);
-    return 0;
-}
-#endif
-
-KWidgetRef kgtk_custom_switch_new(
-    bool is_on,
-    int style_mode,
-    uint8_t fg_gray,
-    uint8_t bg_gray,
-    uint8_t track_gray
-) {
-#if !defined(_WIN32)
-    KWidgetRef eb = kgtk_alignment_new(0.5, 0.5, 0.0, 0.0);
-    fn_g_signal_connect_data conn = (fn_g_signal_connect_data)resolve_sym("g_signal_connect_data");
-    fn_g_object_set_data_full set_data = (fn_g_object_set_data_full)resolve_sym("g_object_set_data_full");
-    if (!eb || !conn) return eb;
-
-    if (style_mode == 1) {
-        kgtk_widget_set_size_request(eb, 52, 52);
-    } else {
-        kgtk_widget_set_size_request(eb, 104, 56);
-    }
-
-    KCustomSwitchState* st = (KCustomSwitchState*)malloc(sizeof(KCustomSwitchState));
-    if (st) {
-        st->is_on = is_on;
-        st->style_mode = style_mode;
-        st->fg_gray = fg_gray;
-        st->bg_gray = bg_gray;
-        st->track_gray = track_gray;
-        if (set_data) {
-            set_data(eb, "kindle-custom-switch-state", st, free);
-        }
-        conn(eb, "expose-event", (void*)c_custom_switch_expose, st, NULL, 0);
-    }
-    return eb;
-#else
-    return NULL;
-#endif
 }
 
 // --- Custom Cairo E-Ink Slider ---
 
-#if !defined(_WIN32)
 typedef struct {
     double value;
     double min_val;
@@ -3387,7 +3316,6 @@ static int c_custom_slider_release(KWidgetRef widget, void* event, void* data) {
     }
     return 1;
 }
-#endif
 
 KWidgetRef kgtk_custom_slider_new(
     double value,
@@ -3402,7 +3330,6 @@ KWidgetRef kgtk_custom_slider_new(
     KIdleCallback on_drag_end,
     void* drag_user_data
 ) {
-#if !defined(_WIN32)
     KWidgetRef eb = kgtk_event_box_new();
     fn_gtk_event_box_set_visible_window set_vis = (fn_gtk_event_box_set_visible_window)resolve_sym("gtk_event_box_set_visible_window");
     fn_gtk_event_box_set_above_child set_above = (fn_gtk_event_box_set_above_child)resolve_sym("gtk_event_box_set_above_child");
@@ -3439,612 +3366,21 @@ KWidgetRef kgtk_custom_slider_new(
         conn(eb, "button-release-event", (void*)c_custom_slider_release, st, NULL, 0);
     }
     return eb;
-#else
-    return NULL;
-#endif
 }
 
 double kgtk_custom_slider_get_value(KWidgetRef slider) {
-#if !defined(_WIN32)
     typedef void* (*fn_g_object_get_data)(void*, const char*);
     fn_g_object_get_data get_data = (fn_g_object_get_data)resolve_sym("g_object_get_data");
     if (get_data && slider) {
         KCustomSliderState* st = (KCustomSliderState*)get_data(slider, "kindle-custom-slider-state");
         if (st) return st->value;
     }
-#endif
-    return kgtk_range_get_value(slider);
+    return 0.0;
 }
 
-// --- Custom Cairo Progress Bar & Divider ---
+// --- Multi-Line TextEditor and Gesture Event Box ---
 
-#if !defined(_WIN32)
-typedef struct {
-    double fraction;
-    uint8_t fg_gray;
-    uint8_t bg_gray;
-    uint8_t track_gray;
-} KCustomProgressState;
-
-static int c_custom_progress_expose(KWidgetRef widget, void* event, void* data) {
-    KCustomProgressState* st = (KCustomProgressState*)data;
-    if (!st || !widget) return 0;
-
-    fn_gtk_widget_get_window get_win = (fn_gtk_widget_get_window)resolve_sym("gtk_widget_get_window");
-    fn_gtk_widget_get_allocation get_alloc = (fn_gtk_widget_get_allocation)resolve_sym("gtk_widget_get_allocation");
-    fn_gdk_cairo_create cairo_create = (fn_gdk_cairo_create)resolve_sym("gdk_cairo_create");
-    fn_cairo_destroy cairo_destroy = (fn_cairo_destroy)resolve_sym("cairo_destroy");
-    fn_cairo_fill fill = (fn_cairo_fill)resolve_sym("cairo_fill");
-    fn_cairo_stroke stroke = (fn_cairo_stroke)resolve_sym("cairo_stroke");
-    fn_cairo_set_line_width set_lw = (fn_cairo_set_line_width)resolve_sym("cairo_set_line_width");
-    if (!get_win || !get_alloc || !cairo_create || !cairo_destroy || !fill || !stroke || !set_lw) return 0;
-
-    void* gdk_win = get_win(widget);
-    if (!gdk_win) return 0;
-
-    KGtkAllocation alloc = { 0, 0, 0, 0 };
-    get_alloc(widget, &alloc);
-    if (alloc.width <= 4 || alloc.height <= 4) return 0;
-
-    void* cr = cairo_create(gdk_win);
-    if (!cr) return 0;
-    kcairo_clip_to_expose(cr, event);
-
-    double ox = (double)alloc.x + 1.5;
-    double oy = (double)alloc.y + 1.5;
-    double w = (double)alloc.width - 3.0;
-    double h = (double)alloc.height - 3.0;
-    double r = h * 0.5;
-
-    kcairo_rounded_rect(cr, ox, oy, w, h, r);
-    kcairo_set_gray(cr, st->track_gray);
-    fill(cr);
-
-    double fill_w = w * st->fraction;
-    if (fill_w > 4.0) {
-        kcairo_rounded_rect(cr, ox, oy, fill_w, h, r);
-        kcairo_set_gray(cr, st->fg_gray);
-        fill(cr);
-    }
-
-    double lw = 1.6 * kgtk_get_ui_scale();
-    if (lw < 1.0) lw = 1.0;
-    kcairo_rounded_rect(cr, ox, oy, w, h, r);
-    set_lw(cr, lw);
-    kcairo_set_gray(cr, st->fg_gray);
-    stroke(cr);
-
-    cairo_destroy(cr);
-    return 0;
-}
-
-typedef struct {
-    uint8_t gray_level;
-} KCustomDividerState;
-
-static int c_custom_divider_expose(KWidgetRef widget, void* event, void* data) {
-    KCustomDividerState* st = (KCustomDividerState*)data;
-    if (!st || !widget) return 0;
-
-    fn_gtk_widget_get_window get_win = (fn_gtk_widget_get_window)resolve_sym("gtk_widget_get_window");
-    fn_gtk_widget_get_allocation get_alloc = (fn_gtk_widget_get_allocation)resolve_sym("gtk_widget_get_allocation");
-    fn_gdk_cairo_create cairo_create = (fn_gdk_cairo_create)resolve_sym("gdk_cairo_create");
-    fn_cairo_destroy cairo_destroy = (fn_cairo_destroy)resolve_sym("cairo_destroy");
-    fn_cairo_fill fill = (fn_cairo_fill)resolve_sym("cairo_fill");
-    if (!get_win || !get_alloc || !cairo_create || !cairo_destroy || !fill) return 0;
-
-    void* gdk_win = get_win(widget);
-    if (!gdk_win) return 0;
-
-    KGtkAllocation alloc = { 0, 0, 0, 0 };
-    get_alloc(widget, &alloc);
-    if (alloc.width <= 0 || alloc.height <= 0) return 0;
-
-    void* cr = cairo_create(gdk_win);
-    if (!cr) return 0;
-    kcairo_clip_to_expose(cr, event);
-
-    kcairo_rounded_rect(cr, (double)alloc.x, (double)alloc.y, (double)alloc.width, (double)alloc.height, 0);
-    kcairo_set_gray(cr, st->gray_level);
-    fill(cr);
-    cairo_destroy(cr);
-    return 0;
-}
-#endif
-
-KWidgetRef kgtk_custom_progress_new(
-    double fraction,
-    uint8_t fg_gray,
-    uint8_t bg_gray,
-    uint8_t track_gray,
-    int height
-) {
-#if !defined(_WIN32)
-    KWidgetRef eb = kgtk_alignment_new(0.5, 0.5, 1.0, 1.0);
-    fn_g_signal_connect_data conn = (fn_g_signal_connect_data)resolve_sym("g_signal_connect_data");
-    fn_g_object_set_data_full set_data = (fn_g_object_set_data_full)resolve_sym("g_object_set_data_full");
-    if (!eb || !conn) return eb;
-
-    kgtk_widget_set_size_request(eb, -1, height > 8 ? height : 28);
-
-    KCustomProgressState* st = (KCustomProgressState*)malloc(sizeof(KCustomProgressState));
-    if (st) {
-        st->fraction = fraction < 0.0 ? 0.0 : (fraction > 1.0 ? 1.0 : fraction);
-        st->fg_gray = fg_gray;
-        st->bg_gray = bg_gray;
-        st->track_gray = track_gray;
-        if (set_data) {
-            set_data(eb, "kindle-custom-progress-state", st, free);
-        }
-        conn(eb, "expose-event", (void*)c_custom_progress_expose, st, NULL, 0);
-    }
-    return eb;
-#else
-    return NULL;
-#endif
-}
-
-void kgtk_custom_progress_set_fraction(KWidgetRef pbar, double fraction) {
-#if !defined(_WIN32)
-    typedef void* (*fn_g_object_get_data)(void*, const char*);
-    fn_g_object_get_data get_data = (fn_g_object_get_data)resolve_sym("g_object_get_data");
-    if (get_data && pbar) {
-        KCustomProgressState* st = (KCustomProgressState*)get_data(pbar, "kindle-custom-progress-state");
-        if (st) {
-            double clamped = fraction < 0.0 ? 0.0 : (fraction > 1.0 ? 1.0 : fraction);
-            st->fraction = clamped;
-            kgtk_widget_queue_draw(pbar);
-        }
-    }
-#else
-    (void)pbar;
-    (void)fraction;
-#endif
-}
-
-KWidgetRef kgtk_custom_divider_new(
-    bool vertical,
-    int thickness,
-    uint8_t gray_level
-) {
-#if !defined(_WIN32)
-    KWidgetRef eb = kgtk_alignment_new(0.5, 0.5, 1.0, 1.0);
-    fn_g_signal_connect_data conn = (fn_g_signal_connect_data)resolve_sym("g_signal_connect_data");
-    fn_g_object_set_data_full set_data = (fn_g_object_set_data_full)resolve_sym("g_object_set_data_full");
-    if (!eb || !conn) return eb;
-
-    int t = thickness > 0 ? thickness : 2;
-    if (vertical) {
-        kgtk_widget_set_size_request(eb, t, -1);
-    } else {
-        kgtk_widget_set_size_request(eb, -1, t);
-    }
-
-    KCustomDividerState* st = (KCustomDividerState*)malloc(sizeof(KCustomDividerState));
-    if (st) {
-        st->gray_level = gray_level;
-        if (set_data) {
-            set_data(eb, "kindle-custom-divider-state", st, free);
-        }
-        conn(eb, "expose-event", (void*)c_custom_divider_expose, st, NULL, 0);
-    }
-    return eb;
-#else
-    return NULL;
-#endif
-}
-
-// --- Cairo Vector Icons, Multi-Line TextEditor, and Gesture Event Box ---
-
-#if !defined(_WIN32)
 #include <sys/time.h>
-
-typedef struct {
-    int icon_id;
-    int size;
-    uint8_t fg_gray;
-    uint8_t bg_gray;
-    bool has_bg;
-} KCustomIconState;
-
-static int c_custom_icon_expose(KWidgetRef widget, void* event, void* data) {
-    KCustomIconState* st = (KCustomIconState*)data;
-    if (!st || !widget) return 0;
-
-    fn_gtk_widget_get_window get_win = (fn_gtk_widget_get_window)resolve_sym("gtk_widget_get_window");
-    fn_gtk_widget_get_allocation get_alloc = (fn_gtk_widget_get_allocation)resolve_sym("gtk_widget_get_allocation");
-    fn_gdk_cairo_create cairo_create = (fn_gdk_cairo_create)resolve_sym("gdk_cairo_create");
-    fn_cairo_destroy cairo_destroy = (fn_cairo_destroy)resolve_sym("cairo_destroy");
-    fn_cairo_new_path new_path = (fn_cairo_new_path)resolve_sym("cairo_new_path");
-    fn_cairo_close_path close_path = (fn_cairo_close_path)resolve_sym("cairo_close_path");
-    fn_cairo_move_to move_to = (fn_cairo_move_to)resolve_sym("cairo_move_to");
-    fn_cairo_line_to line_to = (fn_cairo_line_to)resolve_sym("cairo_line_to");
-    fn_cairo_arc arc = (fn_cairo_arc)resolve_sym("cairo_arc");
-    fn_cairo_fill fill = (fn_cairo_fill)resolve_sym("cairo_fill");
-    fn_cairo_stroke stroke = (fn_cairo_stroke)resolve_sym("cairo_stroke");
-    fn_cairo_set_line_width set_lw = (fn_cairo_set_line_width)resolve_sym("cairo_set_line_width");
-    fn_cairo_set_line_cap set_cap = (fn_cairo_set_line_cap)resolve_sym("cairo_set_line_cap");
-    fn_cairo_set_line_join set_join = (fn_cairo_set_line_join)resolve_sym("cairo_set_line_join");
-    if (!get_win || !get_alloc || !cairo_create || !cairo_destroy || !move_to || !line_to || !arc || !fill || !stroke || !set_lw) return 0;
-
-    void* gdk_win = get_win(widget);
-    if (!gdk_win) return 0;
-
-    KGtkAllocation alloc = { 0, 0, 0, 0 };
-    get_alloc(widget, &alloc);
-    if (alloc.width <= 2 || alloc.height <= 2) return 0;
-
-    void* cr = cairo_create(gdk_win);
-    if (!cr) return 0;
-    kcairo_clip_to_expose(cr, event);
-
-    double w = (double)alloc.width;
-    double h = (double)alloc.height;
-    double s = w < h ? w : h;
-    double cx = (double)alloc.x + w * 0.5;
-    double cy = (double)alloc.y + h * 0.5;
-    double r = s * 0.45;
-    double lw = s * 0.085;
-    if (lw < 2.0) lw = 2.0;
-
-    if (st->has_bg) {
-        kcairo_rounded_rect(cr, (double)alloc.x, (double)alloc.y, w, h, s * 0.22);
-        kcairo_set_gray(cr, st->bg_gray);
-        fill(cr);
-    }
-
-    kcairo_set_gray(cr, st->fg_gray);
-    set_lw(cr, lw);
-    if (set_cap) set_cap(cr, 1);   // CAIRO_LINE_CAP_ROUND
-    if (set_join) set_join(cr, 1); // CAIRO_LINE_JOIN_ROUND
-
-    const double pi = 3.14159265358979323846;
-
-    switch (st->icon_id) {
-    case 0: // wifi
-        if (new_path) new_path(cr);
-        arc(cr, cx, cy + r * 0.55, r * 0.12, 0, 2 * pi);
-        fill(cr);
-        for (int ring = 1; ring <= 3; ++ring) {
-            if (new_path) new_path(cr);
-            arc(cr, cx, cy + r * 0.55, r * (0.38 * ring), 1.22 * pi, 1.78 * pi);
-            stroke(cr);
-        }
-        break;
-
-    case 1: // battery
-        kcairo_rounded_rect(cr, cx - r * 0.95, cy - r * 0.52, r * 1.65, r * 1.04, r * 0.18);
-        stroke(cr);
-        kcairo_rounded_rect(cr, cx + r * 0.75, cy - r * 0.25, r * 0.20, r * 0.50, r * 0.06);
-        fill(cr);
-        kcairo_rounded_rect(cr, cx - r * 0.72, cy - r * 0.30, r * 1.05, r * 0.60, r * 0.08);
-        fill(cr);
-        break;
-
-    case 2: // sun
-        if (new_path) new_path(cr);
-        arc(cr, cx, cy, r * 0.45, 0, 2 * pi);
-        stroke(cr);
-        for (int i = 0; i < 8; ++i) {
-            double ang = (double)i * (pi / 4.0);
-            double c = (i % 2 == 0) ? ((i == 0) ? 1.0 : (i == 4 ? -1.0 : 0.0)) : ((i == 1 || i == 7) ? 0.7071 : -0.7071);
-            double sn = (i % 2 == 0) ? ((i == 2) ? 1.0 : (i == 6 ? -1.0 : 0.0)) : ((i == 1 || i == 3) ? 0.7071 : -0.7071);
-            (void)ang;
-            move_to(cr, cx + c * r * 0.68, cy + sn * r * 0.68);
-            line_to(cr, cx + c * r * 0.98, cy + sn * r * 0.98);
-        }
-        stroke(cr);
-        break;
-
-    case 3: // moon
-        if (new_path) new_path(cr);
-        arc(cr, cx, cy, r * 0.78, 0.25 * pi, 1.55 * pi);
-        arc(cr, cx + r * 0.35, cy - r * 0.22, r * 0.62, 1.40 * pi, 0.40 * pi);
-        if (close_path) close_path(cr);
-        stroke(cr);
-        break;
-
-    case 4: // refresh
-        if (new_path) new_path(cr);
-        arc(cr, cx, cy, r * 0.78, 0.15 * pi, 1.75 * pi);
-        stroke(cr);
-        move_to(cr, cx + r * 0.30, cy - r * 0.82);
-        line_to(cr, cx + r * 0.78, cy - r * 0.55);
-        line_to(cr, cx + r * 0.42, cy - r * 0.20);
-        stroke(cr);
-        break;
-
-    case 5: // chevronLeft
-        move_to(cr, cx + r * 0.30, cy - r * 0.68);
-        line_to(cr, cx - r * 0.38, cy);
-        line_to(cr, cx + r * 0.30, cy + r * 0.68);
-        stroke(cr);
-        break;
-
-    case 6: // chevronRight
-        move_to(cr, cx - r * 0.30, cy - r * 0.68);
-        line_to(cr, cx + r * 0.38, cy);
-        line_to(cr, cx - r * 0.30, cy + r * 0.68);
-        stroke(cr);
-        break;
-
-    case 7: // chevronDown
-        move_to(cr, cx - r * 0.68, cy - r * 0.28);
-        line_to(cr, cx, cy + r * 0.38);
-        line_to(cr, cx + r * 0.68, cy - r * 0.28);
-        stroke(cr);
-        break;
-
-    case 8: // chevronUp
-        move_to(cr, cx - r * 0.68, cy + r * 0.28);
-        line_to(cr, cx, cy - r * 0.38);
-        line_to(cr, cx + r * 0.68, cy + r * 0.28);
-        stroke(cr);
-        break;
-
-    case 9: // search
-        if (new_path) new_path(cr);
-        arc(cr, cx - r * 0.15, cy - r * 0.15, r * 0.58, 0, 2 * pi);
-        stroke(cr);
-        move_to(cr, cx + r * 0.28, cy + r * 0.28);
-        line_to(cr, cx + r * 0.85, cy + r * 0.85);
-        stroke(cr);
-        break;
-
-    case 10: // bookmark
-        move_to(cr, cx - r * 0.58, cy - r * 0.85);
-        line_to(cr, cx + r * 0.58, cy - r * 0.85);
-        line_to(cr, cx + r * 0.58, cy + r * 0.85);
-        line_to(cr, cx, cy + r * 0.38);
-        line_to(cr, cx - r * 0.58, cy + r * 0.85);
-        if (close_path) close_path(cr);
-        stroke(cr);
-        break;
-
-    case 11: // check
-        move_to(cr, cx - r * 0.72, cy + r * 0.05);
-        line_to(cr, cx - r * 0.18, cy + r * 0.58);
-        line_to(cr, cx + r * 0.78, cy - r * 0.52);
-        stroke(cr);
-        break;
-
-    case 12: // warning
-        move_to(cr, cx, cy - r * 0.85);
-        line_to(cr, cx + r * 0.88, cy + r * 0.75);
-        line_to(cr, cx - r * 0.88, cy + r * 0.75);
-        if (close_path) close_path(cr);
-        stroke(cr);
-        move_to(cr, cx, cy - r * 0.25);
-        line_to(cr, cx, cy + r * 0.25);
-        stroke(cr);
-        if (new_path) new_path(cr);
-        arc(cr, cx, cy + r * 0.50, lw * 0.6, 0, 2 * pi);
-        fill(cr);
-        break;
-
-    case 13: // info
-        if (new_path) new_path(cr);
-        arc(cr, cx, cy, r * 0.85, 0, 2 * pi);
-        stroke(cr);
-        move_to(cr, cx, cy - r * 0.05);
-        line_to(cr, cx, cy + r * 0.48);
-        stroke(cr);
-        if (new_path) new_path(cr);
-        arc(cr, cx, cy - r * 0.42, lw * 0.6, 0, 2 * pi);
-        fill(cr);
-        break;
-
-    case 14: // book
-        move_to(cr, cx, cy - r * 0.65);
-        line_to(cr, cx, cy + r * 0.75);
-        move_to(cr, cx, cy - r * 0.65);
-        line_to(cr, cx - r * 0.85, cy - r * 0.78);
-        line_to(cr, cx - r * 0.85, cy + r * 0.62);
-        line_to(cr, cx, cy + r * 0.75);
-        line_to(cr, cx + r * 0.85, cy + r * 0.62);
-        line_to(cr, cx + r * 0.85, cy - r * 0.78);
-        if (close_path) close_path(cr);
-        stroke(cr);
-        break;
-
-    case 15: // globe
-        if (new_path) new_path(cr);
-        arc(cr, cx, cy, r * 0.85, 0, 2 * pi);
-        stroke(cr);
-        if (new_path) new_path(cr);
-        arc(cr, cx - r * 0.72, cy, r * 1.12, -0.26 * pi, 0.26 * pi);
-        stroke(cr);
-        if (new_path) new_path(cr);
-        arc(cr, cx + r * 0.72, cy, r * 1.12, 0.74 * pi, 1.26 * pi);
-        stroke(cr);
-        move_to(cr, cx - r * 0.85, cy);
-        line_to(cr, cx + r * 0.85, cy);
-        move_to(cr, cx, cy - r * 0.85);
-        line_to(cr, cx, cy + r * 0.85);
-        stroke(cr);
-        break;
-
-    case 16: // cloud
-        kcairo_rounded_rect(cr, cx - r * 0.85, cy - r * 0.25, r * 1.70, r * 0.85, r * 0.42);
-        stroke(cr);
-        if (new_path) new_path(cr);
-        arc(cr, cx - r * 0.15, cy - r * 0.25, r * 0.45, pi, 2 * pi);
-        stroke(cr);
-        break;
-
-    case 17: // gear / settings
-        if (new_path) new_path(cr);
-        arc(cr, cx, cy, r * 0.42, 0, 2 * pi);
-        stroke(cr);
-        for (int i = 0; i < 8; ++i) {
-            double c = (i % 2 == 0) ? ((i == 0) ? 1.0 : (i == 4 ? -1.0 : 0.0)) : ((i == 1 || i == 7) ? 0.7071 : -0.7071);
-            double sn = (i % 2 == 0) ? ((i == 2) ? 1.0 : (i == 6 ? -1.0 : 0.0)) : ((i == 1 || i == 3) ? 0.7071 : -0.7071);
-            move_to(cr, cx + c * r * 0.45, cy + sn * r * 0.45);
-            line_to(cr, cx + c * r * 0.88, cy + sn * r * 0.88);
-        }
-        stroke(cr);
-        break;
-
-    case 18: // sliders
-        for (int row = -1; row <= 1; ++row) {
-            double ry = cy + (double)row * r * 0.55;
-            move_to(cr, cx - r * 0.82, ry);
-            line_to(cr, cx + r * 0.82, ry);
-            stroke(cr);
-            double kx = cx + (row == 0 ? r * 0.32 : -r * 0.28);
-            if (new_path) new_path(cr);
-            arc(cr, kx, ry, r * 0.18, 0, 2 * pi);
-            fill(cr);
-        }
-        break;
-
-    case 19: // plus
-        move_to(cr, cx - r * 0.72, cy);
-        line_to(cr, cx + r * 0.72, cy);
-        move_to(cr, cx, cy - r * 0.72);
-        line_to(cr, cx, cy + r * 0.72);
-        stroke(cr);
-        break;
-
-    case 20: // minus
-        move_to(cr, cx - r * 0.72, cy);
-        line_to(cr, cx + r * 0.72, cy);
-        stroke(cr);
-        break;
-
-    case 21: // close
-        move_to(cr, cx - r * 0.62, cy - r * 0.62);
-        line_to(cr, cx + r * 0.62, cy + r * 0.62);
-        move_to(cr, cx + r * 0.62, cy - r * 0.62);
-        line_to(cr, cx - r * 0.62, cy + r * 0.62);
-        stroke(cr);
-        break;
-
-    case 22: // star
-        move_to(cr, cx, cy - r * 0.85);
-        line_to(cr, cx + r * 0.52, cy + r * 0.75);
-        line_to(cr, cx - r * 0.82, cy - r * 0.22);
-        line_to(cr, cx + r * 0.82, cy - r * 0.22);
-        line_to(cr, cx - r * 0.52, cy + r * 0.75);
-        if (close_path) close_path(cr);
-        stroke(cr);
-        break;
-
-    case 23: // bolt
-        move_to(cr, cx + r * 0.12, cy - r * 0.88);
-        line_to(cr, cx - r * 0.55, cy + r * 0.08);
-        line_to(cr, cx + r * 0.05, cy + r * 0.08);
-        line_to(cr, cx - r * 0.12, cy + r * 0.88);
-        line_to(cr, cx + r * 0.55, cy - r * 0.08);
-        line_to(cr, cx - r * 0.05, cy - r * 0.08);
-        if (close_path) close_path(cr);
-        stroke(cr);
-        break;
-
-    case 24: // pencil
-        // Diagonal pencil body + nib at bottom-left
-        move_to(cr, cx - r * 0.78, cy + r * 0.78);
-        line_to(cr, cx - r * 0.72, cy + r * 0.30);
-        line_to(cr, cx + r * 0.36, cy - r * 0.78);
-        line_to(cr, cx + r * 0.78, cy - r * 0.36);
-        line_to(cr, cx - r * 0.30, cy + r * 0.72);
-        if (close_path) close_path(cr);
-        stroke(cr);
-        // Eraser collar line
-        move_to(cr, cx + r * 0.16, cy - r * 0.58);
-        line_to(cr, cx + r * 0.58, cy - r * 0.16);
-        stroke(cr);
-        // Nib collar line
-        move_to(cr, cx - r * 0.72, cy + r * 0.30);
-        line_to(cr, cx - r * 0.30, cy + r * 0.72);
-        stroke(cr);
-        break;
-
-    case 25: // share (box tray + upward arrow)
-        move_to(cr, cx - r * 0.42, cy - r * 0.08);
-        line_to(cr, cx - r * 0.72, cy - r * 0.08);
-        line_to(cr, cx - r * 0.72, cy + r * 0.80);
-        line_to(cr, cx + r * 0.72, cy + r * 0.80);
-        line_to(cr, cx + r * 0.72, cy - r * 0.08);
-        line_to(cr, cx + r * 0.42, cy - r * 0.08);
-        stroke(cr);
-        move_to(cr, cx, cy + r * 0.36);
-        line_to(cr, cx, cy - r * 0.82);
-        stroke(cr);
-        move_to(cr, cx - r * 0.36, cy - r * 0.44);
-        line_to(cr, cx, cy - r * 0.82);
-        line_to(cr, cx + r * 0.36, cy - r * 0.44);
-        stroke(cr);
-        break;
-
-    case 26: // folder
-        move_to(cr, cx - r * 0.85, cy - r * 0.58);
-        line_to(cr, cx - r * 0.22, cy - r * 0.58);
-        line_to(cr, cx - r * 0.02, cy - r * 0.32);
-        line_to(cr, cx + r * 0.85, cy - r * 0.32);
-        line_to(cr, cx + r * 0.85, cy + r * 0.68);
-        line_to(cr, cx - r * 0.85, cy + r * 0.68);
-        if (close_path) close_path(cr);
-        stroke(cr);
-        break;
-
-    case 27: // document
-        move_to(cr, cx - r * 0.65, cy - r * 0.82);
-        line_to(cr, cx + r * 0.25, cy - r * 0.82);
-        line_to(cr, cx + r * 0.65, cy - r * 0.42);
-        line_to(cr, cx + r * 0.65, cy + r * 0.82);
-        line_to(cr, cx - r * 0.65, cy + r * 0.82);
-        if (close_path) close_path(cr);
-        stroke(cr);
-        move_to(cr, cx + r * 0.25, cy - r * 0.82);
-        line_to(cr, cx + r * 0.25, cy - r * 0.42);
-        line_to(cr, cx + r * 0.65, cy - r * 0.42);
-        stroke(cr);
-        move_to(cr, cx - r * 0.36, cy + r * 0.05);
-        line_to(cr, cx + r * 0.36, cy + r * 0.05);
-        move_to(cr, cx - r * 0.36, cy + r * 0.38);
-        line_to(cr, cx + r * 0.36, cy + r * 0.38);
-        stroke(cr);
-        break;
-
-    case 28: // calendar
-        kcairo_rounded_rect(cr, cx - r * 0.78, cy - r * 0.62, r * 1.56, r * 1.40, r * 0.16);
-        stroke(cr);
-        move_to(cr, cx - r * 0.78, cy - r * 0.18);
-        line_to(cr, cx + r * 0.78, cy - r * 0.18);
-        move_to(cr, cx - r * 0.38, cy - r * 0.82);
-        line_to(cr, cx - r * 0.38, cy - r * 0.46);
-        move_to(cr, cx + r * 0.38, cy - r * 0.82);
-        line_to(cr, cx + r * 0.38, cy - r * 0.46);
-        stroke(cr);
-        break;
-
-    case 29: // bookmarkFill
-        move_to(cr, cx - r * 0.58, cy - r * 0.85);
-        line_to(cr, cx + r * 0.58, cy - r * 0.85);
-        line_to(cr, cx + r * 0.58, cy + r * 0.85);
-        line_to(cr, cx, cy + r * 0.38);
-        line_to(cr, cx - r * 0.58, cy + r * 0.85);
-        if (close_path) close_path(cr);
-        fill(cr);
-        move_to(cr, cx - r * 0.58, cy - r * 0.85);
-        line_to(cr, cx + r * 0.58, cy - r * 0.85);
-        line_to(cr, cx + r * 0.58, cy + r * 0.85);
-        line_to(cr, cx, cy + r * 0.38);
-        line_to(cr, cx - r * 0.58, cy + r * 0.85);
-        if (close_path) close_path(cr);
-        stroke(cr);
-        break;
-
-    default:
-        kcairo_rounded_rect(cr, cx - r * 0.78, cy - r * 0.62, r * 1.56, r * 1.40, r * 0.16);
-        stroke(cr);
-        break;
-    }
-
-    cairo_destroy(cr);
-    return 0;
-}
 
 typedef struct {
     int press_x;
@@ -4214,41 +3550,6 @@ static void c_text_buffer_changed(void* buffer, void* data) {
         st->on_changed(st->text_view, st->user_data);
     }
 }
-#endif
-
-KWidgetRef kgtk_custom_icon_new(
-    int icon_id,
-    int size,
-    uint8_t fg_gray,
-    uint8_t bg_gray,
-    bool has_bg
-) {
-#if !defined(_WIN32)
-    KWidgetRef eb = kgtk_alignment_new(0.5, 0.5, 0.0, 0.0);
-    fn_g_signal_connect_data conn = (fn_g_signal_connect_data)resolve_sym("g_signal_connect_data");
-    fn_g_object_set_data_full set_data = (fn_g_object_set_data_full)resolve_sym("g_object_set_data_full");
-    if (!eb || !conn) return eb;
-
-    int px = (int)((size > 8 ? size : 40) * 1.35);
-    kgtk_widget_set_size_request(eb, px, px);
-
-    KCustomIconState* st = (KCustomIconState*)malloc(sizeof(KCustomIconState));
-    if (st) {
-        st->icon_id = icon_id;
-        st->size = px;
-        st->fg_gray = fg_gray;
-        st->bg_gray = bg_gray;
-        st->has_bg = has_bg;
-        if (set_data) {
-            set_data(eb, "kindle-custom-icon-state", st, free);
-        }
-        conn(eb, "expose-event", (void*)c_custom_icon_expose, st, NULL, 0);
-    }
-    return eb;
-#else
-    return NULL;
-#endif
-}
 
 KWidgetRef kgtk_gesture_box_new(
     KWidgetRef child,
@@ -4257,7 +3558,6 @@ KWidgetRef kgtk_gesture_box_new(
     KGestureCallback on_gesture,
     void* user_data
 ) {
-#if !defined(_WIN32)
     KWidgetRef eb = kgtk_event_box_new();
     fn_gtk_event_box_set_visible_window set_vis = (fn_gtk_event_box_set_visible_window)resolve_sym("gtk_event_box_set_visible_window");
     fn_gtk_widget_add_events add_events = (fn_gtk_widget_add_events)resolve_sym("gtk_widget_add_events");
@@ -4294,9 +3594,6 @@ KWidgetRef kgtk_gesture_box_new(
         free(st);
     }
     return eb;
-#else
-    return child;
-#endif
 }
 
 KWidgetRef kgtk_text_editor_new(
@@ -4308,7 +3605,6 @@ KWidgetRef kgtk_text_editor_new(
     KSignalCallback on_changed,
     void* user_data
 ) {
-#if !defined(_WIN32)
     fn_gtk_text_view_new tv_new = (fn_gtk_text_view_new)resolve_sym("gtk_text_view_new");
     fn_gtk_text_view_get_buffer get_buf = (fn_gtk_text_view_get_buffer)resolve_sym("gtk_text_view_get_buffer");
     fn_gtk_text_view_set_wrap_mode set_wrap = (fn_gtk_text_view_set_wrap_mode)resolve_sym("gtk_text_view_set_wrap_mode");
@@ -4352,13 +3648,9 @@ KWidgetRef kgtk_text_editor_new(
         }
     }
     return tv;
-#else
-    return NULL;
-#endif
 }
 
 char* kgtk_text_editor_get_text(KWidgetRef editor) {
-#if !defined(_WIN32)
     if (!editor) return NULL;
     fn_gtk_text_view_get_buffer get_buf = (fn_gtk_text_view_get_buffer)resolve_sym("gtk_text_view_get_buffer");
     fn_gtk_text_buffer_get_start_iter get_start = (fn_gtk_text_buffer_get_start_iter)resolve_sym("gtk_text_buffer_get_start_iter");
@@ -4374,13 +3666,9 @@ char* kgtk_text_editor_get_text(KWidgetRef editor) {
     get_start(buf, start_iter);
     get_end(buf, end_iter);
     return get_txt(buf, start_iter, end_iter, 1);
-#else
-    return NULL;
-#endif
 }
 
 void kgtk_free_string(char* str) {
-#if !defined(_WIN32)
     if (!str) return;
     fn_g_free gfree = (fn_g_free)resolve_sym("g_free");
     if (gfree) {
@@ -4388,10 +3676,8 @@ void kgtk_free_string(char* str) {
     } else {
         free(str);
     }
-#endif
 }
 
-#if !defined(_WIN32)
 typedef int (KGTK_ABI *fn_LipcGetStringProperty)(void*, const char*, const char*, char**);
 typedef void (KGTK_ABI *fn_LipcFreeString)(char*);
 
@@ -4424,21 +3710,15 @@ static void* c_get_lipc_handle_locked(void) {
     }
     return g_lipc_handle;
 }
-#endif
 
 bool klipc_is_available(void) {
-#if !defined(_WIN32)
     if (!g_lipc_lib) {
         g_lipc_lib = dlopen("liblipc.so", RTLD_LAZY | RTLD_GLOBAL);
     }
     return g_lipc_lib != NULL;
-#else
-    return false;
-#endif
 }
 
 int klipc_get_int_property(const char* service, const char* prop, int* out_val) {
-#if !defined(_WIN32)
     pthread_mutex_lock(&g_lipc_mutex);
     void* handle = c_get_lipc_handle_locked();
     if (!handle || !g_lipc_get_int_fn) {
@@ -4448,13 +3728,9 @@ int klipc_get_int_property(const char* service, const char* prop, int* out_val) 
     int res = g_lipc_get_int_fn(handle, service, prop, out_val);
     pthread_mutex_unlock(&g_lipc_mutex);
     return res;
-#else
-    return -1;
-#endif
 }
 
 int klipc_set_int_property(const char* service, const char* prop, int val) {
-#if !defined(_WIN32)
     pthread_mutex_lock(&g_lipc_mutex);
     void* handle = c_get_lipc_handle_locked();
     if (!handle || !g_lipc_set_int_fn) {
@@ -4464,13 +3740,9 @@ int klipc_set_int_property(const char* service, const char* prop, int val) {
     int res = g_lipc_set_int_fn(handle, service, prop, val);
     pthread_mutex_unlock(&g_lipc_mutex);
     return res;
-#else
-    return -1;
-#endif
 }
 
 int klipc_get_string_property(const char* service, const char* prop, char* out_buf, int buf_len) {
-#if !defined(_WIN32)
     if (!out_buf || buf_len <= 0) return -1;
     pthread_mutex_lock(&g_lipc_mutex);
     void* handle = c_get_lipc_handle_locked();
@@ -4487,13 +3759,9 @@ int klipc_get_string_property(const char* service, const char* prop, char* out_b
     }
     pthread_mutex_unlock(&g_lipc_mutex);
     return res;
-#else
-    return -1;
-#endif
 }
 
 int klipc_set_string_property(const char* service, const char* prop, const char* val) {
-#if !defined(_WIN32)
     pthread_mutex_lock(&g_lipc_mutex);
     void* handle = c_get_lipc_handle_locked();
     if (!handle || !g_lipc_set_str_fn) {
@@ -4503,14 +3771,10 @@ int klipc_set_string_property(const char* service, const char* prop, const char*
     int res = g_lipc_set_str_fn(handle, service, prop, val);
     pthread_mutex_unlock(&g_lipc_mutex);
     return res;
-#else
-    return -1;
-#endif
 }
 
 // --- Embedded WebKitGTK 1.0 WebView (libwebkitgtk-1.0.so.0) ---
 
-#if !defined(_WIN32)
 typedef KWidgetRef (KGTK_ABI *fn_webkit_web_view_new)(void);
 typedef void (KGTK_ABI *fn_webkit_web_view_load_uri)(KWidgetRef, const char*);
 typedef void (KGTK_ABI *fn_webkit_web_view_load_html_string)(KWidgetRef, const char*, const char*);
@@ -4625,10 +3889,8 @@ static void c_webview_load_finished(KWidgetRef web_view, void* frame, void* data
         }
     }
 }
-#endif
 
 bool kgtk_webkit_available(void) {
-#if !defined(_WIN32)
     if (!g_webkit_lib) {
         const char* webkit_candidates[] = {
             "libwebkitgtk-1.0.so.0",
@@ -4644,9 +3906,6 @@ bool kgtk_webkit_available(void) {
         }
     }
     return resolve_sym("webkit_web_view_new") != NULL;
-#else
-    return false;
-#endif
 }
 
 KWidgetRef kgtk_webview_obtain(
@@ -4659,7 +3918,6 @@ KWidgetRef kgtk_webview_obtain(
     KIdleCallback on_load_finished,
     void* user_data
 ) {
-#if !defined(_WIN32)
     if (!view_id || !view_id[0]) view_id = "default";
     if (!kgtk_webkit_available()) {
         return kgtk_label_new("WebKitGTK (libwebkitgtk-1.0.so.0) is not available on this host.");
@@ -4806,15 +4064,9 @@ KWidgetRef kgtk_webview_obtain(
 
     kgtk_widget_show_all(slot->scrolled_window);
     return slot->scrolled_window;
-#else
-    (void)view_id; (void)url; (void)html; (void)base_url;
-    (void)zoom_level; (void)min_height; (void)on_load_finished; (void)user_data;
-    return NULL;
-#endif
 }
 
 void kgtk_webview_load_uri(const char* view_id, const char* uri) {
-#if !defined(_WIN32)
     KWebViewSlot* slot = kgtk_find_webview_slot(view_id);
     if (!slot || !slot->web_view || !uri) return;
     if (slot->last_url) free(slot->last_url);
@@ -4827,11 +4079,9 @@ void kgtk_webview_load_uri(const char* view_id, const char* uri) {
     if (load_uri) {
         load_uri(slot->web_view, uri);
     }
-#endif
 }
 
 void kgtk_webview_load_html(const char* view_id, const char* html, const char* base_uri) {
-#if !defined(_WIN32)
     KWebViewSlot* slot = kgtk_find_webview_slot(view_id);
     if (!slot || !slot->web_view || !html) return;
     if (slot->last_html) free(slot->last_html);
@@ -4841,69 +4091,51 @@ void kgtk_webview_load_html(const char* view_id, const char* html, const char* b
         slot->last_url = NULL;
     }
     kgtk_webview_write_and_load_html(slot->web_view, html, base_uri);
-#endif
 }
 
 void kgtk_webview_reload(const char* view_id) {
-#if !defined(_WIN32)
     KWebViewSlot* slot = kgtk_find_webview_slot(view_id);
     if (!slot || !slot->web_view) return;
     fn_webkit_web_view_reload fn = (fn_webkit_web_view_reload)resolve_sym("webkit_web_view_reload");
     if (fn) fn(slot->web_view);
-#endif
 }
 
 void kgtk_webview_stop_loading(const char* view_id) {
-#if !defined(_WIN32)
     KWebViewSlot* slot = kgtk_find_webview_slot(view_id);
     if (!slot || !slot->web_view) return;
     fn_webkit_web_view_stop_loading fn = (fn_webkit_web_view_stop_loading)resolve_sym("webkit_web_view_stop_loading");
     if (fn) fn(slot->web_view);
-#endif
 }
 
 void kgtk_webview_go_back(const char* view_id) {
-#if !defined(_WIN32)
     KWebViewSlot* slot = kgtk_find_webview_slot(view_id);
     if (!slot || !slot->web_view) return;
     fn_webkit_web_view_go_back fn = (fn_webkit_web_view_go_back)resolve_sym("webkit_web_view_go_back");
     if (fn) fn(slot->web_view);
-#endif
 }
 
 void kgtk_webview_go_forward(const char* view_id) {
-#if !defined(_WIN32)
     KWebViewSlot* slot = kgtk_find_webview_slot(view_id);
     if (!slot || !slot->web_view) return;
     fn_webkit_web_view_go_forward fn = (fn_webkit_web_view_go_forward)resolve_sym("webkit_web_view_go_forward");
     if (fn) fn(slot->web_view);
-#endif
 }
 
 bool kgtk_webview_can_go_back(const char* view_id) {
-#if !defined(_WIN32)
     KWebViewSlot* slot = kgtk_find_webview_slot(view_id);
     if (!slot || !slot->web_view) return false;
     fn_webkit_web_view_can_go_back fn = (fn_webkit_web_view_can_go_back)resolve_sym("webkit_web_view_can_go_back");
     return fn ? (fn(slot->web_view) != 0) : false;
-#else
-    return false;
-#endif
 }
 
 bool kgtk_webview_can_go_forward(const char* view_id) {
-#if !defined(_WIN32)
     KWebViewSlot* slot = kgtk_find_webview_slot(view_id);
     if (!slot || !slot->web_view) return false;
     fn_webkit_web_view_can_go_forward fn = (fn_webkit_web_view_can_go_forward)resolve_sym("webkit_web_view_can_go_forward");
     return fn ? (fn(slot->web_view) != 0) : false;
-#else
-    return false;
-#endif
 }
 
 void kgtk_webview_execute_script(const char* view_id, const char* script) {
-#if !defined(_WIN32)
     KWebViewSlot* slot = kgtk_find_webview_slot(view_id);
     if (!slot || !slot->web_view || !script) return;
     fn_webkit_web_view_execute_script fn = (fn_webkit_web_view_execute_script)resolve_sym("webkit_web_view_execute_script");
@@ -4911,35 +4143,17 @@ void kgtk_webview_execute_script(const char* view_id, const char* script) {
         fn(slot->web_view, script);
         kgtk_widget_queue_draw(slot->web_view);
     }
-#endif
-}
-
-const char* kgtk_webview_get_title(const char* view_id) {
-#if !defined(_WIN32)
-    KWebViewSlot* slot = kgtk_find_webview_slot(view_id);
-    if (!slot || !slot->web_view) return "";
-    fn_webkit_web_view_get_title fn = (fn_webkit_web_view_get_title)resolve_sym("webkit_web_view_get_title");
-    const char* res = fn ? fn(slot->web_view) : NULL;
-    return res ? res : "";
-#else
-    return "";
-#endif
 }
 
 const char* kgtk_webview_get_uri(const char* view_id) {
-#if !defined(_WIN32)
     KWebViewSlot* slot = kgtk_find_webview_slot(view_id);
     if (!slot || !slot->web_view) return "";
     fn_webkit_web_view_get_uri fn = (fn_webkit_web_view_get_uri)resolve_sym("webkit_web_view_get_uri");
     const char* res = fn ? fn(slot->web_view) : NULL;
     if (res && res[0]) return res;
     return slot->last_url ? slot->last_url : "";
-#else
-    return "";
-#endif
 }
 
-#if !defined(_WIN32)
 static KWebViewInputFocusCallback g_webview_input_focus_handler = NULL;
 static void* g_webview_input_focus_user_data = NULL;
 
@@ -5024,56 +4238,10 @@ static int c_webview_tap_check_timeout(void* data) {
         "}"
         "function cleanLbl(s){"
         "if(!s)return '';"
-        "s=String(s).replace(/[\\r\\n|\\t]+/g,' ').replace(/\\s+/g,' ').replace(/^\\s+|\\s+$/g,'');"
-        "s=s.replace(/[*:]+\\s*$/,'').replace(/^\\s+|\\s+$/g,'');"
-        "return s;"
+        "return String(s).replace(/[\\r\\n|\\t]+/g,' ').replace(/\\s+/g,' ').replace(/^\\s+|\\s+$/g,'');"
         "}"
         "function resolveLbl(el){"
-        "var s='';"
-        "if(el.id){"
-        "var allL=document.getElementsByTagName('label');"
-        "for(var i=0;i<allL.length;i++){"
-        "if(allL[i].getAttribute('for')===el.id){s=cleanLbl(allL[i].innerText||allL[i].textContent);if(s)return s;}"
-        "}"
-        "}"
-        "var p=el.parentElement;"
-        "while(p && p!==document.body){"
-        "if((p.tagName||'').toUpperCase()==='LABEL'){"
-        "var clone=p.cloneNode(true);"
-        "var ins=clone.querySelectorAll?clone.querySelectorAll('input,textarea,select'):[];"
-        "for(var j=0;j<ins.length;j++){if(ins[j].parentNode)ins[j].parentNode.removeChild(ins[j]);}"
-        "s=cleanLbl(clone.innerText||clone.textContent);"
-        "if(s)return s;"
-        "break;"
-        "}"
-        "p=p.parentElement;"
-        "}"
-        "s=cleanLbl(el.getAttribute('aria-label'));"
-        "if(s)return s;"
-        "if(el.parentNode){"
-        "var txt='';"
-        "var cn=el.parentNode.childNodes;"
-        "for(var k=0;k<cn.length;k++){"
-        "if(cn[k]===el)break;"
-        "var nt=cn[k].nodeType;"
-        "if(nt===3){txt+=cn[k].nodeValue||' ';}"
-        "else if(nt===1){"
-        "var ctg=(cn[k].tagName||'').toUpperCase();"
-        "if(ctg!=='INPUT'&&ctg!=='TEXTAREA'&&ctg!=='SCRIPT'&&ctg!=='STYLE'){txt+=(cn[k].innerText||cn[k].textContent||' ')+' ';}"
-        "}"
-        "}"
-        "s=cleanLbl(txt);"
-        "if(s && s.length<=48)return s;"
-        "}"
-        "var prev=el.previousElementSibling;"
-        "if(prev){"
-        "var ptg=(prev.tagName||'').toUpperCase();"
-        "if(ptg==='LABEL'||ptg==='SPAN'||ptg==='DIV'||ptg==='P'||ptg==='STRONG'||ptg==='B'){"
-        "s=cleanLbl(prev.innerText||prev.textContent);"
-        "if(s && s.length<=48)return s;"
-        "}"
-        "}"
-        "return cleanLbl(el.getAttribute('placeholder')||el.name||el.id||'');"
+        "return cleanLbl(el.getAttribute('aria-label')||el.getAttribute('placeholder')||el.name||el.id||'');"
         "}"
         "var el= resolveHit(document.elementFromPoint(%d,%d)) || resolveHit(document.elementFromPoint(%d,%d));"
         "if(!el && isEd(document.activeElement)) el=document.activeElement;"
@@ -5151,20 +4319,13 @@ static void c_webview_schedule_tap_input_check(KWidgetRef web_view, int tap_x, i
     ctx->tap_y = tap_y;
     timeout_fn(45, c_webview_tap_check_timeout, ctx);
 }
-#endif
 
 void kgtk_set_webview_input_focus_handler(KWebViewInputFocusCallback handler, void* user_data) {
-#if !defined(_WIN32)
     g_webview_input_focus_handler = handler;
     g_webview_input_focus_user_data = user_data;
-#else
-    (void)handler;
-    (void)user_data;
-#endif
 }
 
 void kgtk_webview_set_input_text(const char* view_id, const char* text) {
-#if !defined(_WIN32)
     KWebViewSlot* slot = kgtk_find_webview_slot(view_id);
     if (!slot || !slot->web_view) return;
     fn_webkit_web_view_execute_script exec_fn = (fn_webkit_web_view_execute_script)resolve_sym("webkit_web_view_execute_script");
@@ -5217,14 +4378,9 @@ void kgtk_webview_set_input_text(const char* view_id, const char* text) {
     exec_fn(slot->web_view, js);
     free(js);
     kgtk_widget_queue_draw(slot->web_view);
-#else
-    (void)view_id;
-    (void)text;
-#endif
 }
 
 void kgtk_webview_submit_input(const char* view_id) {
-#if !defined(_WIN32)
     KWebViewSlot* slot = kgtk_find_webview_slot(view_id);
     if (!slot || !slot->web_view) return;
     fn_webkit_web_view_execute_script exec_fn = (fn_webkit_web_view_execute_script)resolve_sym("webkit_web_view_execute_script");
@@ -5245,14 +4401,10 @@ void kgtk_webview_submit_input(const char* view_id) {
         "})();";
     exec_fn(slot->web_view, js);
     kgtk_widget_queue_draw(slot->web_view);
-#else
-    (void)view_id;
-#endif
 }
 
 // --- Fast Asynchronous IPv4 HTTPS Client (libcurl with Connection/TLS/DNS Pooling) ---
 
-#if !defined(_WIN32)
 typedef int (*fn_curl_global_init)(long);
 typedef void* (*fn_curl_easy_init)(void);
 typedef void (*fn_curl_easy_reset)(void*);
@@ -5349,92 +4501,6 @@ static void c_curl_share_unlock(void* handle, int data, void* userptr) {
     }
 }
 
-static void c_csv_append_unique(char* csv, size_t cap, const char* ip) {
-    if (!ip || !ip[0]) return;
-    size_t ip_len = strlen(ip);
-    const char* p = csv;
-    while (*p) {
-        const char* comma = strchr(p, ',');
-        size_t seg_len = comma ? (size_t)(comma - p) : strlen(p);
-        if (seg_len == ip_len && strncmp(p, ip, ip_len) == 0) {
-            return;
-        }
-        if (!comma) break;
-        p = comma + 1;
-    }
-    size_t cur_len = strlen(csv);
-    size_t needed = cur_len + (cur_len > 0 ? 1 : 0) + ip_len + 1;
-    if (needed > cap) return;
-    if (cur_len > 0) {
-        csv[cur_len++] = ',';
-    }
-    memcpy(csv + cur_len, ip, ip_len);
-    csv[cur_len + ip_len] = '\0';
-}
-
-// Inspects /etc/resolv.conf for QEMU SLIRP's 8.8.8.8 c-ares blackhole:
-// When QEMU is launched with `-netdev user,dns=8.8.8.8`, libslirp rewrites outgoing
-// packets to 8.8.8.8:53 to the host resolver, but _sotranslate_in fails to rewrite
-// the source IP back to 8.8.8.8 because 8.8.8.8 is outside 10.0.2.0/24, causing c-ares
-// to stall for its full 5000ms timeout before trying the second nameserver.
-static void c_init_fast_dns_servers(char* out_csv, size_t cap) {
-    out_csv[0] = '\0';
-    const char* env_dns = getenv("KINDLEUI_DNS_SERVERS");
-    if (env_dns && env_dns[0]) {
-        strncpy(out_csv, env_dns, cap - 1);
-        out_csv[cap - 1] = '\0';
-        return;
-    }
-
-    FILE* f = fopen("/etc/resolv.conf", "r");
-    int saw_8888 = 0;
-    char non_8888[256];
-    non_8888[0] = '\0';
-    if (f) {
-        char line[256];
-        while (fgets(line, sizeof(line), f)) {
-            char* p = line;
-            while (*p == ' ' || *p == '\t') p++;
-            if (strncmp(p, "nameserver", 10) != 0) continue;
-            p += 10;
-            if (*p != ' ' && *p != '\t') continue;
-            while (*p == ' ' || *p == '\t') p++;
-            char ip[64];
-            size_t i = 0;
-            while (*p && *p != ' ' && *p != '\t' && *p != '\r' && *p != '\n' && *p != '#' && *p != ';' && i + 1 < sizeof(ip)) {
-                ip[i++] = *p++;
-            }
-            ip[i] = '\0';
-            if (i == 0 || strchr(ip, ':') != NULL) continue; // skip empty or IPv6
-            if (strcmp(ip, "8.8.8.8") == 0) {
-                saw_8888 = 1;
-            } else {
-                c_csv_append_unique(non_8888, sizeof(non_8888), ip);
-            }
-        }
-        fclose(f);
-    }
-
-    if (saw_8888 || non_8888[0] == '\0') {
-        if (non_8888[0]) {
-            strncpy(out_csv, non_8888, cap - 1);
-            out_csv[cap - 1] = '\0';
-        }
-        c_csv_append_unique(out_csv, cap, "1.1.1.1");
-        c_csv_append_unique(out_csv, cap, "1.0.0.1");
-        c_csv_append_unique(out_csv, cap, "8.8.4.4");
-        c_csv_append_unique(out_csv, cap, "8.8.8.8");
-
-        if (!saw_8888 && non_8888[0] == '\0') {
-            FILE* wf = fopen("/tmp/resolv.conf", "w");
-            if (wf) {
-                fprintf(wf, "nameserver 1.1.1.1\nnameserver 8.8.4.4\n");
-                fclose(wf);
-            }
-        }
-    }
-}
-
 static size_t c_curl_write_cb(const void* ptr, size_t size, size_t nmemb, void* userdata) {
     size_t total = size * nmemb;
     if (total == 0 || !ptr || !userdata) return total;
@@ -5504,13 +4570,12 @@ static void c_configure_curl_handle(void* curl, KHttpJob* job) {
     easy_setopt(curl, 10102 /* CURLOPT_ACCEPT_ENCODING */, "");
 
     easy_setopt(curl, 58    /* CURLOPT_AUTOREFERER */, 1L);
-    easy_setopt(curl, 10031 /* CURLOPT_COOKIEFILE */, "/var/local/kindleui_cookies.txt");
-    easy_setopt(curl, 10082 /* CURLOPT_COOKIEJAR */, "/var/local/kindleui_cookies.txt");
     if (g_curl.share_handle) {
         easy_setopt(curl, 10100 /* CURLOPT_SHARE */, g_curl.share_handle);
     }
-    if (g_curl.dns_servers_csv[0] != '\0') {
-        easy_setopt(curl, 10211 /* CURLOPT_DNS_SERVERS */, g_curl.dns_servers_csv);
+    const char* env_dns = getenv("KINDLEUI_DNS_SERVERS");
+    if (env_dns && env_dns[0]) {
+        easy_setopt(curl, 10211 /* CURLOPT_DNS_SERVERS */, env_dns);
     }
 }
 
@@ -5630,8 +4695,6 @@ static bool khttp_ensure_initialized(void) {
         g_curl.global_init(3L /* CURL_GLOBAL_DEFAULT */);
     }
 
-    c_init_fast_dns_servers(g_curl.dns_servers_csv, sizeof(g_curl.dns_servers_csv));
-
     if (g_curl.share_init && g_curl.share_setopt) {
         void* sh = g_curl.share_init();
         if (sh) {
@@ -5659,7 +4722,6 @@ static bool khttp_ensure_initialized(void) {
     return g_curl.available != 0;
 }
 
-#endif
 
 bool khttp_get_async(
     const char* url,
@@ -5667,7 +4729,6 @@ bool khttp_get_async(
     KHttpCallback callback,
     void* user_data
 ) {
-#if !defined(_WIN32)
     if (!url || !url[0] || !callback) return false;
     if (!khttp_ensure_initialized()) return false;
 
@@ -5694,12 +4755,5 @@ bool khttp_get_async(
     pthread_cond_signal(&g_http_queue_cond);
     pthread_mutex_unlock(&g_http_queue_mutex);
     return true;
-#else
-    (void)url; (void)timeout_seconds; (void)callback; (void)user_data;
-    return false;
-#endif
 }
 
-#if defined(_WIN32)
-KWidgetRef kgtk_take_suppressed_redraw_widget(void) { return NULL; }
-#endif

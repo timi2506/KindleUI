@@ -106,11 +106,6 @@ extension KindleWikiRootView {
         let encodedTitle = encodeWikiComponent(trimmed)
         let extractURL = "https://en.wikipedia.org/w/api.php?action=query&prop=extracts%7Cdescription%7Cpageimages%7Clinks&piprop=thumbnail&pithumbsize=960&explaintext=1&pllimit=100&titles=\(encodedTitle)&format=json&redirects=1"
 
-        // Request the figure list and the compact lead section (`section=0`) infobox in parallel with the extract
-        // so Page 0 renders once with its complete Infocard right from the start.
-        requestArticleMedia(generation: generation)
-        requestArticleLeadInfobox(generation: generation)
-
         KindleHTTP.getJSON(MediaWikiExtractsResponse.self, from: extractURL, timeoutSeconds: 12) { extractResult in
             let isCurrent = generation == wikiLoadGeneration
             switch extractResult {
@@ -152,21 +147,13 @@ extension KindleWikiRootView {
                 activeArticleDescription = desc
                 activeArticleRawExtract = fullText
                 activeArticleLeadImageURL = firstPage.thumbnail?.source
+                if let lead = firstPage.thumbnail?.source, !lead.isEmpty {
+                    AsyncImage.prefetch(url: lead)
+                }
                 activeArticleLinks = links
                 activeArticleIsDisambiguation = isDisambiguation
                 articleExtractReady = true
-                // `wikiLoading` stays true until the first pagination result is applied. Give the figure list and
-                // lead infobox a short grace period so the text is laid out once with its Infocard instead of twice.
-                if articleMediaPending || articleInfoboxPending {
-                    DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + Self.figureGraceSeconds) {
-                        KindleMainThread.async {
-                            guard generation == wikiLoadGeneration, wikiLoading else { return }
-                            schedulePagination()
-                        }
-                    }
-                } else {
-                    schedulePagination()
-                }
+                attemptInitialPagination(generation: generation)
                 recordHistory(title: resolvedTitle, subtitle: desc, kind: .wikipedia)
                 if CommandLine.arguments.contains("--enlarge-image"), let lead = firstPage.thumbnail?.source {
                     enlargedImageURL = lead
@@ -175,10 +162,31 @@ extension KindleWikiRootView {
                 }
             }
         }
+
+        // Request the compact lead section (`section=0`) infobox and figure list in parallel
+        // with the primary extract request so the first pagination pass already includes them.
+        requestArticleLeadInfobox(generation: generation)
+        requestArticleMedia(generation: generation)
     }
 
-    /// How long a finished text extract waits for the figure list and lead infobox before being laid out without them.
-    internal static let figureGraceSeconds: Double = 1.8
+    /// Waits briefly (`figureGraceSeconds`) for the parallel lead-infobox and figure-list requests
+    /// before running the first pagination pass so the article does not re-layout multiple times after opening.
+    internal static let figureGraceSeconds: TimeInterval = 0.55
+
+    internal func attemptInitialPagination(generation: Int) {
+        guard generation == wikiLoadGeneration, articleExtractReady else { return }
+        if !articleInfoboxPending && !articleMediaPending {
+            schedulePagination()
+            return
+        }
+        guard wikiPagesGeneration != generation else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.figureGraceSeconds) {
+            guard generation == self.wikiLoadGeneration,
+                  self.articleExtractReady,
+                  self.wikiPagesGeneration != generation else { return }
+            self.schedulePagination()
+        }
+    }
 
     /// Requests the article's figure list. The result is attached to the cache entry even if the reader has
     /// already moved on, and applied to the screen only while this article is still the one being read.
@@ -191,6 +199,7 @@ extension KindleWikiRootView {
             WikipediaMediaListResponse.self,
             from: mediaURL,
             timeoutSeconds: 10,
+            qos: .userInitiated,
             transform: { mediaResp -> [Int: [(url: String, caption: String)]] in
                 Self.sectionImages(from: mediaResp)
             }
@@ -204,6 +213,9 @@ extension KindleWikiRootView {
             articleMediaPending = false
             if case .success(let bySection) = mediaResult {
                 articleMediaLoaded = true
+                for fig in bySection.values.flatMap({ $0 }).prefix(3) {
+                    AsyncImage.prefetch(url: fig.url)
+                }
                 if !bySection.isEmpty {
                     activeArticleSectionImages = bySection
                     if CommandLine.arguments.contains("--enlarge-image") {
@@ -214,10 +226,16 @@ extension KindleWikiRootView {
                             showImageDetail = true
                         }
                     }
+                    if wikiPagesGeneration != generation {
+                        attemptInitialPagination(generation: generation)
+                    } else if wikiPageIndex == 0 {
+                        schedulePagination()
+                    }
+                } else if wikiPagesGeneration != generation {
+                    attemptInitialPagination(generation: generation)
                 }
-            }
-            if !articleInfoboxPending || !wikiLoading {
-                schedulePagination()
+            } else if wikiPagesGeneration != generation {
+                attemptInitialPagination(generation: generation)
             }
         }
     }
@@ -232,12 +250,14 @@ extension KindleWikiRootView {
             MediaWikiParseResponse.self,
             from: parseURL,
             timeoutSeconds: 10,
+            qos: .userInitiated,
             transform: { parseResp -> [WikiTableData] in
                 guard let html = parseResp.parse?.text?.html else { return [] }
                 return parseMediaWikiTables(from: html)
             }
         ) { parseResult in
             let isCurrent = generation == wikiLoadGeneration
+            var didAddTables = false
             if case .success(let tables) = parseResult, !tables.isEmpty {
                 let bySection: [Int: [WikiTableData]] = [0: tables]
                 if let entry = WikiArticleCache.shared.peek(requested) {
@@ -246,11 +266,14 @@ extension KindleWikiRootView {
                 }
                 if isCurrent {
                     activeArticleTables = bySection
+                    didAddTables = true
                 }
             }
             guard isCurrent else { return }
             articleInfoboxPending = false
-            if !articleMediaPending || !wikiLoading {
+            if wikiPagesGeneration != generation {
+                attemptInitialPagination(generation: generation)
+            } else if didAddTables && wikiPageIndex == 0 {
                 schedulePagination()
             }
         }
@@ -358,7 +381,10 @@ extension KindleWikiRootView {
         guard wikiPagesGeneration == wikiLoadGeneration,
               !activeArticleTitle.isEmpty, !wikiPages.isEmpty else { return }
         let fraction = wikiPages.count > 1 ? Double(wikiPageIndex) / Double(wikiPages.count - 1) : 0
-        WikiReadingStore.shared.setProgress(fraction, for: activeArticleTitle)
+        let title = activeArticleTitle
+        DispatchQueue.global(qos: .utility).async {
+            WikiReadingStore.shared.setProgress(fraction, for: title)
+        }
     }
 
     /// Pre-downloads the lead and section figures of `article` into the persistent on-disk image cache.
@@ -504,7 +530,6 @@ extension KindleWikiRootView {
                     wikiPageIndex = max(0, pages.count - 1)
                 }
                 wikiLoading = false
-                requestArticleTables(generation: generation)
             }
         }
     }

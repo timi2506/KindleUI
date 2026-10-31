@@ -11,11 +11,30 @@ public struct MediaWikiSearchResponse: Codable, Sendable {
             public let pageid: Int?
             public let snippet: String?
             public let wordcount: Int?
+            public let cleanSnippet: String
 
             public var id: String { title }
 
-            public var cleanSnippet: String {
-                stripMediaWikiHTML(snippet ?? "")
+            enum CodingKeys: String, CodingKey {
+                case title, pageid, snippet, wordcount
+            }
+
+            public init(title: String, pageid: Int? = nil, snippet: String? = nil, wordcount: Int? = nil) {
+                self.title = title
+                self.pageid = pageid
+                self.snippet = snippet
+                self.wordcount = wordcount
+                self.cleanSnippet = stripMediaWikiHTML(snippet ?? "")
+            }
+
+            public init(from decoder: Decoder) throws {
+                let c = try decoder.container(keyedBy: CodingKeys.self)
+                self.title = try c.decode(String.self, forKey: .title)
+                self.pageid = try c.decodeIfPresent(Int.self, forKey: .pageid)
+                let rawSnippet = try c.decodeIfPresent(String.self, forKey: .snippet)
+                self.snippet = rawSnippet
+                self.wordcount = try c.decodeIfPresent(Int.self, forKey: .wordcount)
+                self.cleanSnippet = stripMediaWikiHTML(rawSnippet ?? "")
             }
         }
         public let search: [SearchHit]?
@@ -100,20 +119,31 @@ public struct WiktionaryPartOfSpeechEntry: Codable, Sendable, Equatable {
         public let definition: String
         public let examples: [String]?
         public let parsedExamples: [ParsedExample]?
+        public let cleanDefinition: String
+        public let cleanExamples: [String]
+        public let linkedWords: [String]
 
-        public var cleanDefinition: String {
-            stripMediaWikiHTML(definition)
+        enum CodingKeys: String, CodingKey {
+            case definition, examples, parsedExamples
         }
 
-        public var cleanExamples: [String] {
+        public init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            let def = try c.decode(String.self, forKey: .definition)
+            let exs = try c.decodeIfPresent([String].self, forKey: .examples)
+            let parsed = try c.decodeIfPresent([ParsedExample].self, forKey: .parsedExamples)
+            self.definition = def
+            self.examples = exs
+            self.parsedExamples = parsed
+            self.cleanDefinition = stripMediaWikiHTML(def)
             var out: [String] = []
-            if let rawList = examples {
+            if let rawList = exs {
                 for ex in rawList {
                     let clean = stripMediaWikiHTML(ex)
                     if !clean.isEmpty { out.append(clean) }
                 }
             }
-            if out.isEmpty, let parsed = parsedExamples {
+            if out.isEmpty, let parsed = parsed {
                 for p in parsed {
                     if let ex = p.example {
                         let clean = stripMediaWikiHTML(ex)
@@ -121,11 +151,8 @@ public struct WiktionaryPartOfSpeechEntry: Codable, Sendable, Equatable {
                     }
                 }
             }
-            return out
-        }
-
-        public var linkedWords: [String] {
-            extractWikiLinks(from: definition)
+            self.cleanExamples = out
+            self.linkedWords = extractWikiLinks(from: def)
         }
     }
 

@@ -118,6 +118,10 @@ public final class KindleDevice: @unchecked Sendable {
     }
 
     /// Called automatically by `KindleUI` (`GTK2Renderer`) after UI state rebuilds or canvas strokes.
+    /// Note: Under X11 on Kindle OS, Xorg's `fbdev`/`hwtcon` XDamage driver automatically submits partial
+    /// waveform updates for damaged regions. Issuing a second `MXCFB_SEND_UPDATE_MTK` ioctl from the app
+    /// process on every partial frame races with Xorg and causes a 700ms LUT collision stall in `hwtcon`.
+    /// Therefore, direct `/dev/fb0` updates are only issued when a full-screen ghosting refresh (`shouldFull`) is requested.
     internal func performAutomaticRefresh(forceFull: Bool = false) {
         interactionCount += 1
         guard let epd = epd else { return }
@@ -127,8 +131,6 @@ public final class KindleDevice: @unchecked Sendable {
              partialRefreshCounter % refreshPolicy.autoFullRefreshInterval == 0)
         if shouldFull {
             _ = epd.refresh(waveform: refreshPolicy.fullWaveform, full: true)
-        } else {
-            _ = epd.refresh(waveform: refreshPolicy.partialWaveform, full: false)
         }
     }
 

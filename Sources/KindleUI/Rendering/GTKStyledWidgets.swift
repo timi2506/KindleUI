@@ -118,9 +118,8 @@ extension GTK2Renderer {
                 kgtk_misc_set_alignment(lbl, xAlign, yAlign)
                 kgtk_label_set_justify(lbl, xAlign < 0.25 ? 0 : (xAlign > 0.75 ? 1 : 2))
                 effectiveFont.pangoDescription.withCString { desc in
-                    kgtk_widget_modify_font_string(lbl, desc)
+                    kgtk_widget_set_font_and_fg(lbl, desc, true, effectiveFg.grayLevel)
                 }
-                kgtk_widget_modify_fg_gray(lbl, 0, effectiveFg.grayLevel)
                 innerWidget = lbl
             } else {
                 innerWidget = nil
@@ -232,19 +231,17 @@ extension GTK2Renderer {
             kgtk_label_set_line_wrap(lbl, false)
             kgtk_misc_set_alignment(lbl, 0.0, 0.5)
             effectiveFont.pangoDescription.withCString { desc in
-                kgtk_widget_modify_font_string(lbl, desc)
+                kgtk_widget_set_font_and_fg(lbl, desc, true, effectiveFg.grayLevel)
             }
-            kgtk_widget_modify_fg_gray(lbl, 0, effectiveFg.grayLevel)
             kgtk_box_pack_start(hbox, lbl, true, true, 0)
         }
 
-        let mode: Int32 = (toggleStyle == .checkbox) ? 1 : 0
-        if let sw = kgtk_custom_switch_new(
-            isOn,
-            mode,
-            effectiveFg.grayLevel,
-            effectiveBg.grayLevel,
-            theme.panelBackground.grayLevel
+        if let sw = buildCairoSwitch(
+            isOn: isOn,
+            isCheckbox: toggleStyle == .checkbox,
+            fgGray: effectiveFg.grayLevel,
+            bgGray: effectiveBg.grayLevel,
+            trackGray: theme.panelBackground.grayLevel
         ) {
             if let vAlign = kgtk_alignment_new(1.0, 0.5, 0.0, 0.0) {
                 kgtk_container_add(vAlign, sw)
@@ -304,23 +301,32 @@ extension GTK2Renderer {
     internal func applyStyle(
         _ style: ViewStyle,
         to widget: KWidgetRef,
-        context: RenderContext
+        context: RenderContext,
+        applyTextStyle: Bool = false
     ) -> KWidgetRef {
         let theme = KindleTheme.current
         var current = widget
 
-        if let font = style.font ?? context.font {
-            font.pangoDescription.withCString { desc in
-                kgtk_widget_modify_font_string(current, desc)
+        if applyTextStyle {
+            let font = style.font ?? context.font
+            let alpha = context.effectiveOpacity(style.opacity)
+            let hasFg = (style.foregroundColor != nil || context.fg != nil || alpha < 0.999)
+            let fgGray: UInt8
+            if hasFg {
+                let baseFg = style.foregroundColor ?? context.fg ?? theme.foreground
+                let targetBg = style.backgroundColor.map { context.blend($0, localOpacity: style.opacity) } ?? context.bg
+                let blended = context.blend(baseFg, localOpacity: style.opacity, against: targetBg)
+                fgGray = blended.grayLevel
+            } else {
+                fgGray = theme.foreground.grayLevel
             }
-        }
-
-        let alpha = context.effectiveOpacity(style.opacity)
-        if style.foregroundColor != nil || context.fg != nil || alpha < 0.999 {
-            let baseFg = style.foregroundColor ?? context.fg ?? theme.foreground
-            let targetBg = style.backgroundColor.map { context.blend($0, localOpacity: style.opacity) } ?? context.bg
-            let blended = context.blend(baseFg, localOpacity: style.opacity, against: targetBg)
-            kgtk_widget_modify_fg_gray(current, 0, blended.grayLevel)
+            if let font = font {
+                font.pangoDescription.withCString { desc in
+                    kgtk_widget_set_font_and_fg(current, desc, hasFg, fgGray)
+                }
+            } else if hasFg {
+                kgtk_widget_set_font_and_fg(current, nil, true, fgGray)
+            }
         }
 
         if style.hasGestures {

@@ -243,8 +243,7 @@ extension KindleWikiRootView {
                             ForEach(rowTopics, id: \.self) { topic in
                                 Button(action: {
                                     KindleKeyboardManager.shared.dismiss()
-                                    searchInput = topic
-                                    performWikipediaSearch(query: topic)
+                                    openWikipediaReader(title: topic)
                                 }) {
                                     HStack(alignment: .center, spacing: 12) {
                                         Icon(.book, size: 20)
@@ -457,8 +456,6 @@ extension KindleWikiRootView {
                             ForEach(pair, id: \.self) { word in
                                 Button(action: {
                                     KindleKeyboardManager.shared.dismiss()
-                                    searchInput = word
-                                    searchWiktionaryMatches(query: word)
                                     openWiktionaryReader(word: word)
                                 }) {
                                     HStack(alignment: .center, spacing: 12) {

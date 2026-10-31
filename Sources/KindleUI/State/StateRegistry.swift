@@ -43,6 +43,7 @@ public final class KindleStateRegistry: @unchecked Sendable {
     public private(set) var applicationID: String = "org.kindlemodding.default"
     private var hasCustomAppStoragePath: Bool = false
     private var resolvedAppStoragePath: String? = nil
+    private var resolvedAppDataDirectory: String? = nil
 
     /// Configures the application identifier used to scope persistent storage on disk.
     public func configureApplicationID(_ rawID: String) {
@@ -51,6 +52,7 @@ public final class KindleStateRegistry: @unchecked Sendable {
             .filter { $0.isLetter || $0.isNumber || $0 == "." || $0 == "-" || $0 == "_" }
         guard !cleaned.isEmpty, cleaned != applicationID else { return }
         applicationID = cleaned
+        resolvedAppDataDirectory = nil
         if !hasCustomAppStoragePath {
             resolvedAppStoragePath = nil
             appStorageLoaded = false
@@ -60,6 +62,9 @@ public final class KindleStateRegistry: @unchecked Sendable {
 
     /// Per-app persistent data directory (`/mnt/us/appdata/<applicationID>` on Kindle, `/tmp/kindleui-appdata/<applicationID>` on desktop).
     public var appDataDirectory: String {
+        if let cached = resolvedAppDataDirectory {
+            return cached
+        }
         let fm = FileManager.default
         let dir: String
         if fm.fileExists(atPath: "/mnt/us/extensions") {
@@ -72,6 +77,7 @@ public final class KindleStateRegistry: @unchecked Sendable {
             dir = "/tmp/kindleui-appdata/\(applicationID)"
         }
         try? fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        resolvedAppDataDirectory = dir
         return dir
     }
 

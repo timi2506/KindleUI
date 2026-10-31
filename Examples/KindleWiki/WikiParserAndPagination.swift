@@ -4,73 +4,97 @@ import KindleUI
 // MARK: - Text & MediaWiki Parsing Helpers
 
 public func stripMediaWikiHTML(_ raw: String) -> String {
+    guard !raw.isEmpty else { return "" }
     var s = raw
-    // Strip embedded <style>, <script>, and reference/edit-section tags before stripping markup tags
-    s = s.replacingOccurrences(of: "<style[^>]*>[\\s\\S]*?</style>", with: "", options: [.regularExpression, .caseInsensitive])
-    s = s.replacingOccurrences(of: "<script[^>]*>[\\s\\S]*?</script>", with: "", options: [.regularExpression, .caseInsensitive])
-    s = s.replacingOccurrences(of: "<sup[^>]*class=\"[^\"]*reference[^\"]*\"[^>]*>[\\s\\S]*?</sup>", with: "", options: [.regularExpression, .caseInsensitive])
-    s = s.replacingOccurrences(of: "<span[^>]*class=\"[^\"]*(?:mw-editsection|noprint|sortkey|Z3988|bday|dtstart|dtend)[^\"]*\"[^>]*>[\\s\\S]*?</span>", with: "", options: [.regularExpression, .caseInsensitive])
-    s = s.replacingOccurrences(of: "<span[^>]*style=\"[^\"]*display\\s*:\\s*none[^\"]*\"[^>]*>(?:<span\\b[^>]*>[\\s\\S]*?</span>|[\\s\\S])*?</span>", with: "", options: [.regularExpression, .caseInsensitive])
-
-    let lineBreakTags = ["<br>", "<br/>", "<br />", "</p>", "</li>", "</div>"]
-    for tag in lineBreakTags {
-        s = s.replacingOccurrences(of: tag, with: "\n")
-    }
-
-    var stripped = String()
-    stripped.reserveCapacity(s.count)
-    var inTag = false
-    for ch in s {
-        if ch == "<" {
-            inTag = true
-        } else if ch == ">" {
-            if inTag {
-                inTag = false
-            } else {
-                stripped.append(ch)
+    if s.contains("<") {
+        // Strip embedded <style>, <script>, and reference/edit-section tags before stripping markup tags
+        if s.range(of: "<style", options: .caseInsensitive) != nil {
+            s = s.replacingOccurrences(of: "<style[^>]*>[\\s\\S]*?</style>", with: "", options: [.regularExpression, .caseInsensitive])
+        }
+        if s.range(of: "<script", options: .caseInsensitive) != nil {
+            s = s.replacingOccurrences(of: "<script[^>]*>[\\s\\S]*?</script>", with: "", options: [.regularExpression, .caseInsensitive])
+        }
+        if s.range(of: "<sup", options: .caseInsensitive) != nil {
+            s = s.replacingOccurrences(of: "<sup[^>]*class=\"[^\"]*reference[^\"]*\"[^>]*>[\\s\\S]*?</sup>", with: "", options: [.regularExpression, .caseInsensitive])
+        }
+        if s.range(of: "<span", options: .caseInsensitive) != nil {
+            if s.contains("mw-editsection") || s.contains("noprint") || s.contains("sortkey") || s.contains("Z3988") || s.contains("bday") || s.contains("dtstart") || s.contains("dtend") {
+                s = s.replacingOccurrences(of: "<span[^>]*class=\"[^\"]*(?:mw-editsection|noprint|sortkey|Z3988|bday|dtstart|dtend)[^\"]*\"[^>]*>[\\s\\S]*?</span>", with: "", options: [.regularExpression, .caseInsensitive])
             }
-        } else if !inTag {
-            stripped.append(ch)
+            if s.range(of: "display", options: .caseInsensitive) != nil {
+                s = s.replacingOccurrences(of: "<span[^>]*style=\"[^\"]*display\\s*:\\s*none[^\"]*\"[^>]*>(?:<span\\b[^>]*>[\\s\\S]*?</span>|[\\s\\S])*?</span>", with: "", options: [.regularExpression, .caseInsensitive])
+            }
+        }
+
+        let lineBreakTags = ["<br>", "<br/>", "<br />", "</p>", "</li>", "</div>"]
+        for tag in lineBreakTags where s.contains(tag) {
+            s = s.replacingOccurrences(of: tag, with: "\n")
         }
     }
 
-    let entities: [(String, String)] = [
-        ("&quot;", "\""),
-        ("&#039;", "'"),
-        ("&#39;", "'"),
-        ("&#x27;", "'"),
-        ("&apos;", "'"),
-        ("&nbsp;", " "),
-        ("&#160;", " "),
-        ("&ndash;", "–"),
-        ("&mdash;", "—"),
-        ("&gt;", ">"),
-        ("&lt;", "<"),
-        ("&amp;", "&"),
-        ("&#91;", "["),
-        ("&#93;", "]"),
-        ("&thinsp;", " "),
-        ("&ensp;", " "),
-        ("&emsp;", " "),
-        ("&hellip;", "…"),
-        ("&#8217;", "'"),
-        ("&#8220;", "\""),
-        ("&#8221;", "\""),
-        ("&#8211;", "–"),
-        ("&#8212;", "—"),
-        ("&#8230;", "…"),
-        ("\u{00A0}", " "),
-        ("\u{202F}", " "),
-        ("\u{2009}", " "),
-        ("\u{2002}", " "),
-        ("\u{2003}", " ")
-    ]
-    for (entity, rep) in entities {
-        stripped = stripped.replacingOccurrences(of: entity, with: rep)
+    var stripped: String
+    if s.contains("<") {
+        stripped = String()
+        stripped.reserveCapacity(s.count)
+        var inTag = false
+        for ch in s {
+            if ch == "<" {
+                inTag = true
+            } else if ch == ">" {
+                if inTag {
+                    inTag = false
+                } else {
+                    stripped.append(ch)
+                }
+            } else if !inTag {
+                stripped.append(ch)
+            }
+        }
+    } else {
+        stripped = s
+    }
+
+    if stripped.contains("&") {
+        let entities: [(String, String)] = [
+            ("&quot;", "\""),
+            ("&#039;", "'"),
+            ("&#39;", "'"),
+            ("&#x27;", "'"),
+            ("&apos;", "'"),
+            ("&nbsp;", " "),
+            ("&#160;", " "),
+            ("&ndash;", "–"),
+            ("&mdash;", "—"),
+            ("&gt;", ">"),
+            ("&lt;", "<"),
+            ("&amp;", "&"),
+            ("&#91;", "["),
+            ("&#93;", "]"),
+            ("&thinsp;", " "),
+            ("&ensp;", " "),
+            ("&emsp;", " "),
+            ("&hellip;", "…"),
+            ("&#8217;", "'"),
+            ("&#8220;", "\""),
+            ("&#8221;", "\""),
+            ("&#8211;", "–"),
+            ("&#8212;", "—"),
+            ("&#8230;", "…")
+        ]
+        for (entity, rep) in entities where stripped.contains(entity) {
+            stripped = stripped.replacingOccurrences(of: entity, with: rep)
+        }
+    }
+
+    let unicodeSpaces = ["\u{00A0}", "\u{202F}", "\u{2009}", "\u{2002}", "\u{2003}"]
+    for sp in unicodeSpaces where stripped.contains(sp) {
+        stripped = stripped.replacingOccurrences(of: sp, with: " ")
     }
 
     // Strip bracket citations like [1], [2], [14]
-    stripped = stripped.replacingOccurrences(of: "\\[[0-9]+\\]", with: "", options: .regularExpression)
+    if stripped.contains("[") {
+        stripped = stripped.replacingOccurrences(of: "\\[[0-9]+\\]", with: "", options: .regularExpression)
+    }
 
     let rawLines: [String] = stripped.components(separatedBy: CharacterSet.newlines)
     var cleanLines: [String] = []

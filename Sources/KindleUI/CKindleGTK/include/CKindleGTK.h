@@ -9,11 +9,21 @@ extern "C" {
 #endif
 
 typedef void* KWidgetRef;
+typedef void* KCairoRef;
 typedef void (*KSignalCallback)(KWidgetRef widget, void* user_data);
 typedef void (*KIdleCallback)(void* user_data);
 typedef void (*KCanvasExposeCallback)(KWidgetRef widget, int width, int height, void* user_data);
 typedef void (*KCanvasPointerCallback)(KWidgetRef widget, int phase, int x, int y, void* user_data);
 typedef void (*KGestureCallback)(int gesture_type, int dx, int dy, void* user_data);
+typedef void (*KCairoExposeCallback)(
+    KWidgetRef widget,
+    KCairoRef cr,
+    double x,
+    double y,
+    double width,
+    double height,
+    void* user_data
+);
 
 /// Initializes GTK+-2.0 dynamically if available on the host/Kindle.
 /// Returns true if GTK+-2.0 was loaded and initialized successfully.
@@ -24,9 +34,6 @@ void kgtk_main(void);
 
 /// Quits the GTK main event loop.
 void kgtk_main_quit(void);
-
-/// Processes pending GTK events without blocking.
-void kgtk_drain_events(void);
 
 /// Synchronously runs pending container resizes, processes all GDK window expose updates, and flushes X11 output.
 void kgtk_flush_updates(KWidgetRef window);
@@ -52,7 +59,7 @@ double kgtk_get_scroll_position(void);
 /// Schedules a one-shot callback on the GLib/GTK main loop idle queue.
 void kgtk_schedule_idle(KIdleCallback callback, void* user_data);
 
-/// Returns true if the user is currently dragging a GtkRange / GtkHScale slider.
+/// Returns true if the user is currently dragging a slider.
 bool kgtk_is_slider_dragging(void);
 
 /// Resets the slider dragging flag.
@@ -75,7 +82,6 @@ KWidgetRef kgtk_window_new(int window_type);
 void kgtk_window_set_title(KWidgetRef window, const char* title);
 void kgtk_window_set_default_size(KWidgetRef window, int width, int height);
 void kgtk_window_set_position(KWidgetRef window, int position);
-void kgtk_window_fullscreen(KWidgetRef window);
 void kgtk_window_connect_quit_keys(KWidgetRef window, KIdleCallback on_quit, void* user_data);
 
 // --- Containers & Layout ---
@@ -83,13 +89,9 @@ KWidgetRef kgtk_vbox_new(bool homogeneous, int spacing);
 KWidgetRef kgtk_hbox_new(bool homogeneous, int spacing);
 void kgtk_box_pack_start(KWidgetRef box, KWidgetRef child, bool expand, bool fill, int padding);
 void kgtk_container_add(KWidgetRef container, KWidgetRef widget);
-void kgtk_container_remove(KWidgetRef container, KWidgetRef widget);
 void kgtk_container_clear(KWidgetRef container);
-void kgtk_container_set_border_width(KWidgetRef container, int border_width);
 KWidgetRef kgtk_alignment_new(float xalign, float yalign, float xscale, float yscale);
 void kgtk_alignment_set_padding(KWidgetRef alignment, int top, int bottom, int left, int right);
-KWidgetRef kgtk_frame_new(const char* label);
-void kgtk_frame_set_shadow_type(KWidgetRef frame, int shadow_type);
 KWidgetRef kgtk_scrolled_window_new(void);
 void kgtk_scrolled_window_add_with_viewport(KWidgetRef scrolled_window, KWidgetRef child);
 void kgtk_scrolled_window_set_bg_gray(KWidgetRef scrolled_window, uint8_t gray_level);
@@ -100,7 +102,6 @@ KWidgetRef kgtk_nowindow_canvas_new(void);
 KWidgetRef kgtk_event_box_new(void);
 KWidgetRef kgtk_zstack_new(void);
 void kgtk_zstack_add(KWidgetRef zstack, KWidgetRef child);
-KWidgetRef kgtk_modal_scrim_new(KWidgetRef child, uint8_t bg_gray, double alpha, double xalign, double yalign, double xscale, double yscale);
 void kgtk_widget_set_sensitive(KWidgetRef widget, bool sensitive);
 
 // --- Widgets ---
@@ -110,8 +111,41 @@ void kgtk_label_set_markup(KWidgetRef label, const char* markup);
 void kgtk_label_set_line_wrap(KWidgetRef label, bool wrap);
 void kgtk_label_set_justify(KWidgetRef label, int justify);
 void kgtk_misc_set_alignment(KWidgetRef misc, float xalign, float yalign);
+KWidgetRef kgtk_entry_new(void);
+void kgtk_entry_set_text(KWidgetRef entry, const char* text);
+const char* kgtk_entry_get_text(KWidgetRef entry);
+KWidgetRef kgtk_image_new_from_file_scaled(const char* filename, int max_width, int max_height);
 
-// --- Cairo-Rendered Modern E-Ink Components ---
+// --- Cairo Drawing Primitives (Used by Swift E-Ink Widgets) ---
+void kgtk_connect_cairo_expose(
+    KWidgetRef widget,
+    KCairoExposeCallback on_expose,
+    void* user_data,
+    KIdleCallback on_destroy
+);
+void kgtk_connect_cairo_expose_cached(
+    KWidgetRef widget,
+    uint64_t cache_key,
+    uint8_t clear_bg_gray,
+    KCairoExposeCallback on_expose,
+    void* user_data,
+    KIdleCallback on_destroy
+);
+void kcairo_set_gray(KCairoRef cr, uint8_t gray);
+void kcairo_set_gray_alpha(KCairoRef cr, uint8_t gray, double alpha);
+void kcairo_set_line_width(KCairoRef cr, double width);
+void kcairo_set_line_round(KCairoRef cr);
+void kcairo_new_path(KCairoRef cr);
+void kcairo_close_path(KCairoRef cr);
+void kcairo_move_to(KCairoRef cr, double x, double y);
+void kcairo_line_to(KCairoRef cr, double x, double y);
+void kcairo_arc(KCairoRef cr, double xc, double yc, double radius, double angle1, double angle2);
+void kcairo_rectangle(KCairoRef cr, double x, double y, double width, double height);
+void kcairo_rounded_rect(KCairoRef cr, double x, double y, double width, double height, double radius);
+void kcairo_fill(KCairoRef cr);
+void kcairo_stroke(KCairoRef cr);
+
+// --- Interactive E-Ink Containers & Controls ---
 KWidgetRef kgtk_styled_container_new(
     KWidgetRef child,
     bool has_bg,
@@ -164,14 +198,6 @@ KWidgetRef kgtk_styled_button_new(
     void* user_data
 );
 
-KWidgetRef kgtk_custom_switch_new(
-    bool is_on,
-    int style_mode,
-    uint8_t fg_gray,
-    uint8_t bg_gray,
-    uint8_t track_gray
-);
-
 KWidgetRef kgtk_custom_slider_new(
     double value,
     double min_val,
@@ -186,29 +212,6 @@ KWidgetRef kgtk_custom_slider_new(
     void* drag_user_data
 );
 double kgtk_custom_slider_get_value(KWidgetRef slider);
-
-KWidgetRef kgtk_custom_progress_new(
-    double fraction,
-    uint8_t fg_gray,
-    uint8_t bg_gray,
-    uint8_t track_gray,
-    int height
-);
-void kgtk_custom_progress_set_fraction(KWidgetRef pbar, double fraction);
-
-KWidgetRef kgtk_custom_divider_new(
-    bool vertical,
-    int thickness,
-    uint8_t gray_level
-);
-
-KWidgetRef kgtk_custom_icon_new(
-    int icon_id,
-    int size,
-    uint8_t fg_gray,
-    uint8_t bg_gray,
-    bool has_bg
-);
 
 KWidgetRef kgtk_gesture_box_new(
     KWidgetRef child,
@@ -251,7 +254,6 @@ void kgtk_webview_go_forward(const char* view_id);
 bool kgtk_webview_can_go_back(const char* view_id);
 bool kgtk_webview_can_go_forward(const char* view_id);
 void kgtk_webview_execute_script(const char* view_id, const char* script);
-const char* kgtk_webview_get_title(const char* view_id);
 const char* kgtk_webview_get_uri(const char* view_id);
 
 typedef void (*KWebViewInputFocusCallback)(
@@ -267,31 +269,6 @@ void kgtk_set_webview_input_focus_handler(KWebViewInputFocusCallback handler, vo
 void kgtk_webview_set_input_text(const char* view_id, const char* text);
 void kgtk_webview_submit_input(const char* view_id);
 
-KWidgetRef kgtk_button_new_with_label(const char* label);
-void kgtk_button_set_label(KWidgetRef button, const char* label);
-
-KWidgetRef kgtk_check_button_new_with_label(const char* label);
-bool kgtk_toggle_button_get_active(KWidgetRef toggle_button);
-void kgtk_toggle_button_set_active(KWidgetRef toggle_button, bool is_active);
-
-KWidgetRef kgtk_entry_new(void);
-void kgtk_entry_set_text(KWidgetRef entry, const char* text);
-const char* kgtk_entry_get_text(KWidgetRef entry);
-
-KWidgetRef kgtk_progress_bar_new(void);
-void kgtk_progress_bar_set_fraction(KWidgetRef pbar, double fraction);
-void kgtk_progress_bar_set_text(KWidgetRef pbar, const char* text);
-
-KWidgetRef kgtk_hscale_new_with_range(double min, double max, double step);
-double kgtk_range_get_value(KWidgetRef range);
-void kgtk_range_set_value(KWidgetRef range, double value);
-void kgtk_scale_connect_drag_watch(KWidgetRef scale, KIdleCallback on_drag_end, void* user_data);
-
-KWidgetRef kgtk_hseparator_new(void);
-KWidgetRef kgtk_vseparator_new(void);
-KWidgetRef kgtk_image_new_from_file(const char* filename);
-KWidgetRef kgtk_image_new_from_file_scaled(const char* filename, int max_width, int max_height);
-
 // --- Interactive E-Ink Drawing Canvas (GtkDrawingArea) ---
 KWidgetRef kgtk_drawing_area_new(void);
 void kgtk_widget_get_size(KWidgetRef widget, int* out_width, int* out_height);
@@ -306,14 +283,12 @@ void kgtk_drawing_area_connect(
 
 // --- Styling & Geometry ---
 void kgtk_widget_set_size_request(KWidgetRef widget, int width, int height);
-void kgtk_widget_show(KWidgetRef widget);
 void kgtk_widget_show_all(KWidgetRef widget);
-void kgtk_widget_hide(KWidgetRef widget);
-void kgtk_widget_destroy(KWidgetRef widget);
 void kgtk_widget_queue_draw(KWidgetRef widget);
 void kgtk_widget_modify_bg_gray(KWidgetRef widget, int state, uint8_t gray_level);
 void kgtk_widget_modify_fg_gray(KWidgetRef widget, int state, uint8_t gray_level);
 void kgtk_widget_modify_font_string(KWidgetRef widget, const char* font_desc_str);
+void kgtk_widget_set_font_and_fg(KWidgetRef widget, const char* font_desc_str, bool has_fg, uint8_t fg_gray);
 
 // --- Signals ---
 unsigned long kgtk_signal_connect(KWidgetRef instance, const char* detailed_signal, KSignalCallback callback, void* user_data);

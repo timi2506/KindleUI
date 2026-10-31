@@ -44,8 +44,15 @@ public struct Text: View, _PrimitiveView {
         }.joined()
     }
 
+    private static func containsMarkdownDelimiter(_ s: String) -> Bool {
+        for b in s.utf8 {
+            if b == 0x2A || b == 0x7E || b == 0x60 { return true }
+        }
+        return false
+    }
+
     public init(_ content: String) {
-        self.spans = [Span(rawText: content, parseMarkdown: true)]
+        self.spans = [Span(rawText: content, parseMarkdown: Self.containsMarkdownDelimiter(content))]
     }
 
     public init(verbatim content: String) {

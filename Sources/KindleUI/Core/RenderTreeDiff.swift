@@ -1,15 +1,6 @@
 import Foundation
 
 // MARK: - Structural comparison of render trees
-//
-// `GTK2Renderer` used to destroy and recreate every GTK widget on each state change. On an e-ink
-// device that is by far the most expensive thing KindleUI does. The helpers below let the renderer
-// decide whether a freshly evaluated tree differs from the mounted one *structurally* (anything that
-// needs a different widget or different widget styling) or only in *live content* (label text,
-// progress fractions) that can be patched in place, and re-bind closures without rebuilding.
-//
-// Everything that is not explicitly ignored is compared, and unknown/new node kinds compare as
-// "different", so the failure mode of a missed case is an unnecessary (but correct) rebuild.
 
 extension ViewStyle {
     /// Names of every stored property of `ViewStyle`. `isStructurallyEqual(to:)` must account for each of
@@ -28,6 +19,22 @@ extension ViewStyle {
         "swipeThresholdPx", "onDragChanged", "onDragEnded",
     ]
 
+    private var handlerPresenceMask: UInt16 {
+        var mask: UInt16 = 0
+        if onSubmitHandler != nil    { mask |= 1 << 0 }
+        if onAppear != nil           { mask |= 1 << 1 }
+        if onDisappear != nil        { mask |= 1 << 2 }
+        if onTapGesture != nil       { mask |= 1 << 3 }
+        if onLongPressGesture != nil { mask |= 1 << 4 }
+        if onSwipeLeft != nil        { mask |= 1 << 5 }
+        if onSwipeRight != nil       { mask |= 1 << 6 }
+        if onSwipeUp != nil          { mask |= 1 << 7 }
+        if onSwipeDown != nil        { mask |= 1 << 8 }
+        if onDragChanged != nil      { mask |= 1 << 9 }
+        if onDragEnded != nil        { mask |= 1 << 10 }
+        return mask
+    }
+
     /// Compares everything that influences how a node is rendered. Closures are compared by presence only
     /// (they are re-bound separately), and `pangoMarkup` is ignored because it is live label content.
     internal func isStructurallyEqual(to o: ViewStyle) -> Bool {
@@ -37,6 +44,8 @@ extension ViewStyle {
               borderColor == o.borderColor,
               borderWidth == o.borderWidth,
               cornerRadius == o.cornerRadius,
+              (unevenCorners == nil) == (o.unevenCorners == nil),
+              unevenCorners.map({ a in o.unevenCorners.map { a == $0 } ?? false }) ?? true,
               isEllipse == o.isEllipse,
               shadow == o.shadow,
               contentPadding == o.contentPadding,
@@ -69,29 +78,8 @@ extension ViewStyle {
               navigationTitle == o.navigationTitle,
               explicitID == o.explicitID,
               longPressDurationMs == o.longPressDurationMs,
-              swipeThresholdPx == o.swipeThresholdPx
-        else { return false }
-
-        switch (unevenCorners, o.unevenCorners) {
-        case (nil, nil): break
-        case let (a?, b?):
-            guard a.topLeading == b.topLeading, a.topTrailing == b.topTrailing,
-                  a.bottomTrailing == b.bottomTrailing, a.bottomLeading == b.bottomLeading
-            else { return false }
-        default: return false
-        }
-
-        guard (onSubmitHandler == nil) == (o.onSubmitHandler == nil),
-              (onAppear == nil) == (o.onAppear == nil),
-              (onDisappear == nil) == (o.onDisappear == nil),
-              (onTapGesture == nil) == (o.onTapGesture == nil),
-              (onLongPressGesture == nil) == (o.onLongPressGesture == nil),
-              (onSwipeLeft == nil) == (o.onSwipeLeft == nil),
-              (onSwipeRight == nil) == (o.onSwipeRight == nil),
-              (onSwipeUp == nil) == (o.onSwipeUp == nil),
-              (onSwipeDown == nil) == (o.onSwipeDown == nil),
-              (onDragChanged == nil) == (o.onDragChanged == nil),
-              (onDragEnded == nil) == (o.onDragEnded == nil)
+              swipeThresholdPx == o.swipeThresholdPx,
+              handlerPresenceMask == o.handlerPresenceMask
         else { return false }
 
         return RenderNode.nodesAreStructurallyEqual(toolbarNodes, o.toolbarNodes)
@@ -115,59 +103,55 @@ extension RenderNode {
     ///
     /// Closures are ignored here; the renderer re-binds them to the mounted widgets.
     internal func isStructurallyEqual(to other: RenderNode) -> Bool {
+        let matchesNodeKind: Bool
         switch (self, other) {
-        case (.empty, .empty):
-            return true
-        case let (.group(a), .group(b)):
-            return RenderNode.nodesAreStructurallyEqual(a, b)
-        case let (.vstack(a1, s1, c1, st1), .vstack(a2, s2, c2, st2)):
-            return a1 == a2 && s1 == s2 && st1.isStructurallyEqual(to: st2)
-                && RenderNode.nodesAreStructurallyEqual(c1, c2)
-        case let (.hstack(a1, s1, c1, st1), .hstack(a2, s2, c2, st2)):
-            return a1 == a2 && s1 == s2 && st1.isStructurallyEqual(to: st2)
-                && RenderNode.nodesAreStructurallyEqual(c1, c2)
-        case let (.zstack(a1, c1, st1), .zstack(a2, c2, st2)):
-            return a1 == a2 && st1.isStructurallyEqual(to: st2)
-                && RenderNode.nodesAreStructurallyEqual(c1, c2)
-        case let (.scrollView(i1, c1, st1), .scrollView(i2, c2, st2)):
-            return i1 == i2 && st1.isStructurallyEqual(to: st2) && c1.isStructurallyEqual(to: c2)
-        case let (.card(t1, c1, st1), .card(t2, c2, st2)):
-            return t1 == t2 && st1.isStructurallyEqual(to: st2) && c1.isStructurallyEqual(to: c2)
-        case let (.text(_, w1, a1, st1), .text(_, w2, a2, st2)):
-            return w1 == w2 && a1 == a2 && st1.isStructurallyEqual(to: st2)
-        case let (.button(l1, c1, _, st1), .button(l2, c2, _, st2)):
-            guard l1 == l2, st1.isStructurallyEqual(to: st2) else { return false }
-            switch (c1, c2) {
-            case (nil, nil): return true
-            case let (x?, y?): return x.isStructurallyEqual(to: y)
-            default: return false
-            }
-        case let (.toggle(l1, on1, _, st1), .toggle(l2, on2, _, st2)):
-            return l1 == l2 && on1 == on2 && st1.isStructurallyEqual(to: st2)
-        case let (.textField(p1, t1, _, st1), .textField(p2, t2, _, st2)):
-            return p1 == p2 && t1 == t2 && st1.isStructurallyEqual(to: st2)
-        case let (.textEditor(t1, m1, _, st1), .textEditor(t2, m2, _, st2)):
-            return t1 == t2 && m1 == m2 && st1.isStructurallyEqual(to: st2)
-        case let (.slider(v1, r1, s1, _, st1), .slider(v2, r2, s2, _, st2)):
-            return v1 == v2 && r1 == r2 && s1 == s2 && st1.isStructurallyEqual(to: st2)
-        case let (.progressBar(_, t1, st1), .progressBar(_, t2, st2)):
-            return (t1?.isEmpty ?? true) == (t2?.isEmpty ?? true) && st1.isStructurallyEqual(to: st2)
-        case let (.divider(v1, st1), .divider(v2, st2)):
-            return v1 == v2 && st1.isStructurallyEqual(to: st2)
-        case let (.spacer(m1, st1), .spacer(m2, st2)):
-            return m1 == m2 && st1.isStructurallyEqual(to: st2)
-        case let (.image(p1, a1, st1), .image(p2, a2, st2)):
-            return p1 == p2 && a1 == a2 && st1.isStructurallyEqual(to: st2)
-        case let (.icon(i1, s1, st1), .icon(i2, s2, st2)):
-            return i1 == i2 && s1 == s2 && st1.isStructurallyEqual(to: st2)
-        case let (.canvas(b1, l1, _, _, st1), .canvas(b2, l2, _, _, st2)):
-            return b1 === b2 && l1 == l2 && st1.isStructurallyEqual(to: st2)
-        case let (.webView(id1, u1, h1, b1, z1, m1, _, st1), .webView(id2, u2, h2, b2, z2, m2, _, st2)):
-            return id1 == id2 && u1 == u2 && h1 == h2 && b1 == b2 && z1 == z2 && m1 == m2
-                && st1.isStructurallyEqual(to: st2)
+        case (.empty, .empty), (.group, .group):
+            matchesNodeKind = true
+        case let (.vstack(a1, s1, _, _), .vstack(a2, s2, _, _)):
+            matchesNodeKind = a1 == a2 && s1 == s2
+        case let (.hstack(a1, s1, _, _), .hstack(a2, s2, _, _)):
+            matchesNodeKind = a1 == a2 && s1 == s2
+        case let (.zstack(a1, _, _), .zstack(a2, _, _)):
+            matchesNodeKind = a1 == a2
+        case let (.scrollView(i1, _, _), .scrollView(i2, _, _)):
+            matchesNodeKind = i1 == i2
+        case let (.card(t1, _, _), .card(t2, _, _)):
+            matchesNodeKind = t1 == t2
+        case let (.text(_, w1, a1, _), .text(_, w2, a2, _)):
+            matchesNodeKind = w1 == w2 && a1 == a2
+        case let (.button(l1, c1, _, _), .button(l2, c2, _, _)):
+            matchesNodeKind = l1 == l2 && ((c1 == nil) == (c2 == nil))
+        case let (.toggle(l1, on1, _, _), .toggle(l2, on2, _, _)):
+            matchesNodeKind = l1 == l2 && on1 == on2
+        case let (.textField(p1, t1, _, _), .textField(p2, t2, _, _)):
+            matchesNodeKind = p1 == p2 && t1 == t2
+        case let (.textEditor(t1, m1, _, _), .textEditor(t2, m2, _, _)):
+            matchesNodeKind = t1 == t2 && m1 == m2
+        case let (.slider(v1, r1, s1, _, _), .slider(v2, r2, s2, _, _)):
+            matchesNodeKind = v1 == v2 && r1 == r2 && s1 == s2
+        case let (.progressBar(_, t1, _), .progressBar(_, t2, _)):
+            matchesNodeKind = (t1?.isEmpty ?? true) == (t2?.isEmpty ?? true)
+        case let (.divider(v1, _), .divider(v2, _)):
+            matchesNodeKind = v1 == v2
+        case let (.spacer(m1, _), .spacer(m2, _)):
+            matchesNodeKind = m1 == m2
+        case let (.image(p1, a1, _), .image(p2, a2, _)):
+            matchesNodeKind = p1 == p2 && a1 == a2
+        case let (.icon(i1, s1, _), .icon(i2, s2, _)):
+            matchesNodeKind = i1 == i2 && s1 == s2
+        case let (.canvas(b1, l1, _, _, _), .canvas(b2, l2, _, _, _)):
+            matchesNodeKind = b1 === b2 && l1 == l2
+        case let (.webView(id1, u1, h1, b1, z1, m1, _, _), .webView(id2, u2, h2, b2, z2, m2, _, _)):
+            matchesNodeKind = id1 == id2 && u1 == u2 && h1 == h2 && b1 == b2 && z1 == z2 && m1 == m2
         default:
             return false
         }
+        guard matchesNodeKind else { return false }
+
+        if let s1 = styleSnapshot, let s2 = other.styleSnapshot {
+            guard s1.isStructurallyEqual(to: s2) else { return false }
+        }
+        return RenderNode.nodesAreStructurallyEqual(renderChildren, other.renderChildren)
     }
 
     /// Child nodes in the order `GTK2Renderer` descends into them. A node's position in this list is the

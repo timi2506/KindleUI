@@ -220,191 +220,54 @@ public indirect enum RenderNode: @unchecked Sendable {
         }
     }
 
+    private var containerChildren: [RenderNode] {
+        switch self {
+        case .group(let c), .vstack(_, _, let c, _), .hstack(_, _, let c, _), .zstack(_, let c, _):
+            return c
+        case .scrollView(_, let c, _), .card(_, let c, _):
+            return [c]
+        default:
+            return []
+        }
+    }
+
+    private func firstStyleValue<T>(_ extract: (ViewStyle) -> T?) -> T? {
+        if let style = styleSnapshot, let value = extract(style) {
+            return value
+        }
+        for child in containerChildren {
+            if let value = child.firstStyleValue(extract) {
+                return value
+            }
+        }
+        return nil
+    }
+
     /// Extracts any `KindleWindowConfig` attached via `.kindleWindow(...)` in the tree.
     public var extractedWindowConfig: KindleWindowConfig? {
-        switch self {
-        case .empty:
-            return nil
-        case .group(let children):
-            for c in children {
-                if let cfg = c.extractedWindowConfig { return cfg }
-            }
-            return nil
-        case .vstack(_, _, let children, let style),
-             .hstack(_, _, let children, let style),
-             .zstack(_, let children, let style):
-            if let cfg = style.windowConfig { return cfg }
-            for c in children {
-                if let cfg = c.extractedWindowConfig { return cfg }
-            }
-            return nil
-        case .scrollView(_, let child, let style),
-             .card(_, let child, let style):
-            return style.windowConfig ?? child.extractedWindowConfig
-        case .text(_, _, _, let style),
-             .button(_, _, _, let style),
-             .toggle(_, _, _, let style),
-             .textField(_, _, _, let style),
-             .textEditor(_, _, _, let style),
-             .slider(_, _, _, _, let style),
-             .progressBar(_, _, let style),
-             .divider(_, let style),
-             .spacer(_, let style),
-             .image(_, _, let style),
-             .icon(_, _, let style),
-             .canvas(_, _, _, _, let style),
-             .webView(_, _, _, _, _, _, _, let style):
-            return style.windowConfig
-        }
+        firstStyleValue { $0.windowConfig }
     }
 
     /// Extracts any `KindleColorScheme` attached via `.preferredColorScheme(...)` in the tree.
     public var extractedColorScheme: KindleColorScheme? {
-        switch self {
-        case .empty:
-            return nil
-        case .group(let children):
-            for c in children {
-                if let s = c.extractedColorScheme { return s }
-            }
-            return nil
-        case .vstack(_, _, let children, let style),
-             .hstack(_, _, let children, let style),
-             .zstack(_, let children, let style):
-            if let s = style.colorScheme { return s }
-            for c in children {
-                if let s = c.extractedColorScheme { return s }
-            }
-            return nil
-        case .scrollView(_, let child, let style),
-             .card(_, let child, let style):
-            return style.colorScheme ?? child.extractedColorScheme
-        case .text(_, _, _, let style),
-             .button(_, _, _, let style),
-             .toggle(_, _, _, let style),
-             .textField(_, _, _, let style),
-             .textEditor(_, _, _, let style),
-             .slider(_, _, _, _, let style),
-             .progressBar(_, _, let style),
-             .divider(_, let style),
-             .spacer(_, let style),
-             .image(_, _, let style),
-             .icon(_, _, let style),
-             .canvas(_, _, _, _, let style),
-             .webView(_, _, _, _, _, _, _, let style):
-            return style.colorScheme
-        }
+        firstStyleValue { $0.colorScheme }
     }
 
     /// Extracts any `EInkRefreshPolicy` attached via `.einkRefreshPolicy(...)` in the tree.
     public var extractedRefreshPolicy: EInkRefreshPolicy? {
-        switch self {
-        case .empty:
-            return nil
-        case .group(let children):
-            for c in children {
-                if let p = c.extractedRefreshPolicy { return p }
-            }
-            return nil
-        case .vstack(_, _, let children, let style),
-             .hstack(_, _, let children, let style),
-             .zstack(_, let children, let style):
-            if let p = style.refreshPolicy { return p }
-            for c in children {
-                if let p = c.extractedRefreshPolicy { return p }
-            }
-            return nil
-        case .scrollView(_, let child, let style),
-             .card(_, let child, let style):
-            return style.refreshPolicy ?? child.extractedRefreshPolicy
-        case .text(_, _, _, let style),
-             .button(_, _, _, let style),
-             .toggle(_, _, _, let style),
-             .textField(_, _, _, let style),
-             .textEditor(_, _, _, let style),
-             .slider(_, _, _, _, let style),
-             .progressBar(_, _, let style),
-             .divider(_, let style),
-             .spacer(_, let style),
-             .image(_, _, let style),
-             .icon(_, _, let style),
-             .canvas(_, _, _, _, let style),
-             .webView(_, _, _, _, _, _, _, let style):
-            return style.refreshPolicy
-        }
+        firstStyleValue { $0.refreshPolicy }
     }
 
     /// Extracts any navigation title attached via `.navigationTitle(...)` in the tree.
     public var extractedNavigationTitle: String? {
-        switch self {
-        case .empty:
-            return nil
-        case .group(let children):
-            for c in children {
-                if let t = c.extractedNavigationTitle { return t }
-            }
-            return nil
-        case .vstack(_, _, let children, let style),
-             .hstack(_, _, let children, let style),
-             .zstack(_, let children, let style):
-            if let t = style.navigationTitle { return t }
-            for c in children {
-                if let t = c.extractedNavigationTitle { return t }
-            }
-            return nil
-        case .scrollView(_, let child, let style),
-             .card(_, let child, let style):
-            return style.navigationTitle ?? child.extractedNavigationTitle
-        case .text(_, _, _, let style),
-             .button(_, _, _, let style),
-             .toggle(_, _, _, let style),
-             .textField(_, _, _, let style),
-             .textEditor(_, _, _, let style),
-             .slider(_, _, _, _, let style),
-             .progressBar(_, _, let style),
-             .divider(_, let style),
-             .spacer(_, let style),
-             .image(_, _, let style),
-             .icon(_, _, let style),
-             .canvas(_, _, _, _, let style),
-             .webView(_, _, _, _, _, _, _, let style):
-            return style.navigationTitle
-        }
+        firstStyleValue { $0.navigationTitle }
     }
 
     /// Extracts any toolbar items attached via `.toolbar { ... }` in the tree.
     public var extractedToolbarNodes: [RenderNode] {
-        switch self {
-        case .empty:
-            return []
-        case .group(let children):
+        if case .group(let children) = self {
             return children.flatMap { $0.extractedToolbarNodes }
-        case .vstack(_, _, let children, let style),
-             .hstack(_, _, let children, let style),
-             .zstack(_, let children, let style):
-            if !style.toolbarNodes.isEmpty { return style.toolbarNodes }
-            for c in children {
-                let nodes = c.extractedToolbarNodes
-                if !nodes.isEmpty { return nodes }
-            }
-            return []
-        case .scrollView(_, let child, let style),
-             .card(_, let child, let style):
-            return !style.toolbarNodes.isEmpty ? style.toolbarNodes : child.extractedToolbarNodes
-        case .text(_, _, _, let style),
-             .button(_, _, _, let style),
-             .toggle(_, _, _, let style),
-             .textField(_, _, _, let style),
-             .textEditor(_, _, _, let style),
-             .slider(_, _, _, _, let style),
-             .progressBar(_, _, let style),
-             .divider(_, let style),
-             .spacer(_, let style),
-             .image(_, _, let style),
-             .icon(_, _, let style),
-             .canvas(_, _, _, _, let style),
-             .webView(_, _, _, _, _, _, _, let style):
-            return style.toolbarNodes
         }
+        return firstStyleValue { $0.toolbarNodes.isEmpty ? nil : $0.toolbarNodes } ?? []
     }
 }
