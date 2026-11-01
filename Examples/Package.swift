@@ -10,7 +10,8 @@ let package = Package(
     ],
     products: [
         .executable(name: "KindleShowcase", targets: ["KindleShowcase"]),
-        .executable(name: "KindleWiki", targets: ["KindleWiki"])
+        .executable(name: "KindleWiki", targets: ["KindleWiki"]),
+        .executable(name: "FynnCloud", targets: ["FynnCloud"])
     ],
     dependencies: [
         .package(name: "KindleUI", path: "..")
@@ -25,6 +26,11 @@ let package = Package(
             name: "KindleWiki",
             dependencies: [.product(name: "KindleUI", package: "KindleUI")],
             path: "KindleWiki"
+        ),
+        .executableTarget(
+            name: "FynnCloud",
+            dependencies: [.product(name: "KindleUI", package: "KindleUI")],
+            path: "FynnCloud"
         ),
         .testTarget(
             name: "KindleWikiTests",

@@ -363,9 +363,9 @@ extension GTK2Renderer {
     }
 
     internal func alignHorizontallyIfNeeded(widget: KWidgetRef, child: RenderNode, alignment: HorizontalAlignment) -> KWidgetRef {
-        if case .text(_, let wrap, let textAlign, let s) = child, s.backgroundColor == nil, s.borderWidth == 0 {
+        if case .text(_, let wrap, _, let s) = child, s.backgroundColor == nil, s.borderWidth == 0 {
             let hasExplicitWidthCap = (s.width != nil || s.maxWidth != nil) && s.expandHorizontally != true
-            if (alignment != .leading && textAlign == .leading && !wrap && s.fillHorizontally != true && s.expandHorizontally != true && s.width == nil && s.maxWidth == nil) || hasExplicitWidthCap {
+            if (alignment != .leading && !wrap && s.fillHorizontally != true && s.expandHorizontally != true && s.width == nil && s.maxWidth == nil) || hasExplicitWidthCap {
                 let hAlign = (s.alignment?.horizontal ?? alignment).gtkAlign
                 if let align = kgtk_alignment_new(hAlign, 0.0, 0.0, 1.0) {
                     kgtk_container_add(align, widget)

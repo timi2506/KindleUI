@@ -198,9 +198,10 @@ public struct WebView: View, _PrimitiveView {
         _ = controller.statusText
         self.minHeight = max(160, minHeight)
         self.onLoadFinished = {
-            if controller.html == nil {
-                let actual = controller.currentURL
-                if !actual.isEmpty && !actual.contains("__local_doc_") {
+            let actual = controller.currentURL
+            if !actual.isEmpty && !actual.contains("__local_doc_") {
+                let isCustomScheme = actual.contains("://") && !actual.hasPrefix("file://") && !actual.hasPrefix("about:")
+                if controller.html == nil || isCustomScheme {
                     if controller.url != actual {
                         controller.url = actual
                     }

@@ -32,6 +32,15 @@ public enum KindleIconName: Int32, CaseIterable, Sendable, Equatable {
     case document = 27
     case calendar = 28
     case bookmarkFill = 29
+    case user = 30
+    case trash = 31
+    case server = 32
+    case link = 33
+    case download = 34
+    case upload = 35
+    case lock = 36
+    case clock = 37
+    case bug = 38
 
     public init(systemName: String) {
         switch systemName.lowercased() {
@@ -39,32 +48,41 @@ public enum KindleIconName: Int32, CaseIterable, Sendable, Equatable {
         case "battery", "battery.100", "battery.75": self = .battery
         case "sun", "sun.max", "sun.max.fill": self = .sun
         case "moon", "moon.fill", "moon.stars": self = .moon
-        case "refresh", "arrow.clockwise", "arrow.triangle.2.circlepath": self = .refresh
+        case "refresh", "arrow.clockwise", "arrow.counterclockwise", "arrow.triangle.2.circlepath", "clock.arrow.circlepath", "arrow.uturn.backward", "arrow.uturn.backward.circle.fill": self = .refresh
         case "chevron.left", "arrow.left", "back": self = .chevronLeft
         case "chevron.right", "arrow.right", "forward": self = .chevronRight
-        case "chevron.down", "arrow.down": self = .chevronDown
-        case "chevron.up", "arrow.up": self = .chevronUp
+        case "chevron.down": self = .chevronDown
+        case "chevron.up": self = .chevronUp
         case "search", "magnifyingglass": self = .search
         case "bookmark": self = .bookmark
         case "bookmark.fill": self = .bookmarkFill
-        case "check", "checkmark", "checkmark.circle": self = .check
+        case "check", "checkmark", "checkmark.circle", "checkmark.circle.fill", "checkmark.seal.fill": self = .check
         case "warning", "exclamationmark.triangle", "exclamationmark.triangle.fill": self = .warning
         case "info", "info.circle", "info.circle.fill": self = .info
         case "book", "book.fill", "text.book.closed": self = .book
-        case "globe", "network": self = .globe
+        case "globe", "network", "safari", "safari.fill": self = .globe
         case "cloud", "cloud.sun", "cloud.fill": self = .cloud
         case "gear", "gearshape", "gearshape.fill", "settings": self = .gear
-        case "sliders", "slider.horizontal.3": self = .sliders
-        case "plus", "plus.circle": self = .plus
+        case "sliders", "slider.horizontal.3", "paintpalette.fill": self = .sliders
+        case "plus", "plus.circle", "doc.badge.plus", "folder.badge.plus": self = .plus
         case "minus", "minus.circle": self = .minus
-        case "close", "xmark", "xmark.circle", "trash", "trash.fill", "delete", "delete.left": self = .close
-        case "star", "star.fill", "sparkles": self = .star
-        case "bolt", "bolt.fill": self = .bolt
-        case "pencil", "pencil.tip", "paintbrush", "paintbrush.pointed", "scribble": self = .pencil
-        case "share", "square.and.arrow.up": self = .share
+        case "close", "xmark", "xmark.circle", "xmark.circle.fill": self = .close
+        case "trash", "trash.fill", "trash.slash.fill", "delete", "delete.left": self = .trash
+        case "star", "star.fill", "star.slash", "sparkles", "sparkles.rectangle.stack.fill", "wand.and.stars": self = .star
+        case "bolt", "bolt.fill", "power": self = .bolt
+        case "pencil", "pencil.line", "pencil.tip", "paintbrush", "paintbrush.pointed", "scribble", "square.and.pencil": self = .pencil
+        case "share", "square.and.arrow.up", "rectangle.portrait.and.arrow.right": self = .share
         case "folder", "folder.fill": self = .folder
-        case "doc", "doc.text", "document": self = .document
-        case "calendar", "clock", "timer": self = .calendar
+        case "doc", "doc.fill", "doc.text", "document", "doc.on.doc": self = .document
+        case "calendar": self = .calendar
+        case "clock", "clock.fill", "timer": self = .clock
+        case "person", "person.fill", "person.circle", "person.circle.fill", "person.crop.circle", "person.crop.circle.fill", "person.2", "person.2.fill", "person.2.slash", "person.3", "person.3.fill", "person.badge.key.fill": self = .user
+        case "server", "server.rack", "externaldrive", "externaldrive.fill", "building.2.fill", "scalemass.fill": self = .server
+        case "link", "link.badge.plus": self = .link
+        case "arrow.down", "arrow.down.circle", "arrow.down.circle.fill", "tray.and.arrow.down", "download": self = .download
+        case "arrow.up", "arrow.up.circle", "arrow.up.circle.fill", "arrow.up.forward", "upload": self = .upload
+        case "lock", "lock.fill", "lock.open", "lock.open.fill", "key", "key.fill": self = .lock
+        case "ant", "ant.fill", "ladybug", "ladybug.fill", "bug": self = .bug
         default: self = .info
         }
     }
@@ -101,6 +119,15 @@ public enum KindleIconName: Int32, CaseIterable, Sendable, Equatable {
         case .document: return "document"
         case .calendar: return "calendar"
         case .bookmarkFill: return "bookmarkFill"
+        case .user: return "user"
+        case .trash: return "trash"
+        case .server: return "server"
+        case .link: return "link"
+        case .download: return "download"
+        case .upload: return "upload"
+        case .lock: return "lock"
+        case .clock: return "clock"
+        case .bug: return "bug"
         }
     }
 
@@ -136,6 +163,15 @@ public enum KindleIconName: Int32, CaseIterable, Sendable, Equatable {
         case .folder: return "[D]"
         case .document: return "[F]"
         case .calendar: return "[#]"
+        case .user: return "[U]"
+        case .trash: return "[T]"
+        case .server: return "[S]"
+        case .link: return "[L]"
+        case .download: return "[v]"
+        case .upload: return "[^]"
+        case .lock: return "[K]"
+        case .clock: return "(t)"
+        case .bug: return "[B]"
         }
     }
 }

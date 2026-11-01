@@ -405,6 +405,9 @@ internal struct RenderContext {
         } else if let pad = style.padding {
             innerPad = pad
             outerPad = nil
+        } else if role == .plain || role == .borderless {
+            innerPad = EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0)
+            outerPad = nil
         } else {
             innerPad = controlSize.defaultPadding
             outerPad = nil
