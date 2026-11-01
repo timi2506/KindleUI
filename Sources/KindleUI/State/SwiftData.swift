@@ -11,7 +11,7 @@ public enum SortOrder: Sendable, Equatable {
 /// Protocol adopted by persistent models stored in `ModelContainer` and queried via `@Query`.
 public protocol PersistentModel: Codable, Identifiable, Equatable, Sendable {}
 
-/// Manages persistent storage of `PersistentModel` collections on Kindle (`/mnt/us/extensions/kindleui_models.json`).
+/// Manages persistent storage of `PersistentModel` collections on Kindle (`<appDataDirectory>/models.json`).
 public final class ModelContainer: @unchecked Sendable {
     public static let shared = ModelContainer()
 
@@ -170,9 +170,15 @@ public struct Query<Element: PersistentModel>: @unchecked Sendable {
 
 
 extension View {
+    /// Injects a `ModelContainer` into the view hierarchy's environment for `@Query` and `@Environment(\.modelContext)`.
     public func modelContainer(_ container: ModelContainer) -> some View {
-        KindleStateRegistry.shared.defaultModelContainer = container
+        if !KindleStateRegistry.shared.suppressSideEffects {
+            KindleStateRegistry.shared.defaultModelContainer = container
+        }
         return _EnvironmentModifiedView(content: self) { env in
+            if !KindleStateRegistry.shared.suppressSideEffects {
+                KindleStateRegistry.shared.defaultModelContainer = container
+            }
             env.modelContext = container.mainContext
         }
     }

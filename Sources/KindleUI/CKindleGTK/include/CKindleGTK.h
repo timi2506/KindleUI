@@ -59,6 +59,25 @@ double kgtk_get_scroll_position(void);
 /// Schedules a one-shot callback on the GLib/GTK main loop idle queue.
 void kgtk_schedule_idle(KIdleCallback callback, void* user_data);
 
+/// Schedules a low-priority background callback on the GLib/GTK main loop (runs after all redraws and high-priority idles).
+void kgtk_schedule_low_priority_idle(KIdleCallback callback, void* user_data);
+
+/// Prepares scroll state before mounting a new view slot without destroying existing sibling slots in the root container.
+void kgtk_prepare_slot_mount(void);
+
+/// Queries or restores the active primary and modal GtkScrolledWindow pointers for the current view slot.
+void kgtk_get_active_scrolled_windows(KWidgetRef* out_primary, KWidgetRef* out_modal);
+void kgtk_set_active_scrolled_windows(KWidgetRef primary, KWidgetRef modal);
+
+/// Pre-sizes/allocates and pre-renders all GtkLabel pixmaps in an offscreen (hidden) view slot.
+void kgtk_prerender_offscreen_slot(
+    KWidgetRef window,
+    KWidgetRef root_container,
+    KWidgetRef slot_widget,
+    const KWidgetRef* labels,
+    int label_count
+);
+
 /// Returns true if the user is currently dragging a slider.
 bool kgtk_is_slider_dragging(void);
 
@@ -70,6 +89,12 @@ void kgtk_get_screen_size(int* out_width, int* out_height);
 
 /// Overrides the simulated screen pixel dimensions when running outside X11/GDK (e.g. in KindlePreviewServer).
 void kgtk_set_simulated_screen_size(int width, int height);
+
+/// Returns true if the active display supports Kaleido 3 Colorsoft CFA RGB rendering.
+bool kgtk_is_color_display(void);
+
+/// Overrides Colorsoft color display detection (e.g. for desktop previews or CLI flags).
+void kgtk_set_simulated_color_display(bool is_color);
 
 /// Returns the device UI scale factor relative to the 1860x2480 reference grid (e.g. 1.0 on Scribe, 0.58 on PW3/4, 0.41 on PW1/2, 0.32 on Touch).
 double kgtk_get_ui_scale(void);
@@ -108,7 +133,9 @@ KWidgetRef kgtk_label_new(const char* text);
 void kgtk_label_set_text(KWidgetRef label, const char* text);
 void kgtk_label_set_markup(KWidgetRef label, const char* markup);
 void kgtk_label_set_line_wrap(KWidgetRef label, bool wrap);
+void kgtk_label_set_max_lines(KWidgetRef label, int max_lines);
 void kgtk_label_set_justify(KWidgetRef label, int justify);
+void kgtk_label_set_bg_gray(KWidgetRef label, uint8_t bg_gray);
 void kgtk_misc_set_alignment(KWidgetRef misc, float xalign, float yalign);
 KWidgetRef kgtk_entry_new(void);
 void kgtk_entry_set_text(KWidgetRef entry, const char* text);
@@ -281,7 +308,18 @@ void kgtk_drawing_area_connect(
 
 // --- Styling & Geometry ---
 void kgtk_widget_set_size_request(KWidgetRef widget, int width, int height);
+void kgtk_widget_set_size_constraints(
+    KWidgetRef widget,
+    int min_width,
+    int max_width,
+    int min_height,
+    int max_height,
+    float xalign,
+    float yalign
+);
 void kgtk_widget_show_all(KWidgetRef widget);
+void kgtk_widget_set_visible(KWidgetRef widget, bool visible);
+void kgtk_widget_destroy(KWidgetRef widget);
 void kgtk_widget_queue_draw(KWidgetRef widget);
 void kgtk_widget_modify_bg_gray(KWidgetRef widget, int state, uint8_t gray_level);
 void kgtk_widget_modify_fg_gray(KWidgetRef widget, int state, uint8_t gray_level);

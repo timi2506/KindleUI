@@ -15,6 +15,10 @@ public struct ViewStyle: @unchecked Sendable {
     public var padding: EdgeInsets?
     public var width: Int?
     public var height: Int?
+    public var minWidth: Int?
+    public var maxWidth: Int?
+    public var minHeight: Int?
+    public var maxHeight: Int?
     public var expand: Bool = false
     public var fill: Bool = true
     public var expandHorizontally: Bool? = nil
@@ -41,6 +45,7 @@ public struct ViewStyle: @unchecked Sendable {
     public var navigationTitle: String?
     public var toolbarNodes: [RenderNode] = []
     public var pangoMarkup: String?
+    public var lineLimit: Int? = nil
     public var explicitID: AnyHashable?
     public var onSubmitHandler: (() -> Void)?
     public var onAppear: (() -> Void)?
@@ -269,5 +274,96 @@ public indirect enum RenderNode: @unchecked Sendable {
             return children.flatMap { $0.extractedToolbarNodes }
         }
         return firstStyleValue { $0.toolbarNodes.isEmpty ? nil : $0.toolbarNodes } ?? []
+    }
+
+    // MARK: - Shared Layout Expansion & Root Background Queries
+
+    internal var wantsFullWidth: Bool {
+        if case .spacer = self { return true }
+        if let s = styleSnapshot, (s.expandHorizontally == true || s.fillHorizontally == true || s.expand) {
+            return true
+        }
+        switch self {
+        case .vstack(_, _, let children, _),
+             .hstack(_, _, let children, _),
+             .zstack(_, let children, _),
+             .group(let children):
+            return children.contains { $0.wantsFullWidth }
+        case .card(_, let child, _),
+             .scrollView(_, let child, _):
+            return child.wantsFullWidth
+        default:
+            return false
+        }
+    }
+
+    internal var wantsFullHeight: Bool {
+        if case .spacer = self { return true }
+        if case .divider(let vertical, _) = self, vertical { return true }
+        if case .scrollView = self { return true }
+        if let s = styleSnapshot, (s.expandVertically == true || s.fillVertically == true) {
+            return true
+        }
+        switch self {
+        case .vstack(_, _, let children, _),
+             .zstack(_, let children, _),
+             .group(let children):
+            return children.contains { $0.wantsFullHeight }
+        case .card(_, let child, _):
+            return child.wantsFullHeight
+        default:
+            return false
+        }
+    }
+
+    internal var expansionFlags: (expand: Bool, fill: Bool) {
+        if case .spacer = self { return (true, true) }
+        if let style = styleSnapshot {
+            return (style.expand, style.fill)
+        }
+        return (false, true)
+    }
+
+    internal var verticalExpansionFlags: (expand: Bool, fill: Bool) {
+        if case .spacer = self { return (true, true) }
+        if let s = styleSnapshot {
+            if let expV = s.expandVertically {
+                return (expV, s.fillVertically ?? s.fill)
+            }
+            if s.expandHorizontally == true {
+                return (false, false)
+            }
+        }
+        return expansionFlags
+    }
+
+    internal var horizontalExpansionFlags: (expand: Bool, fill: Bool) {
+        if case .spacer = self { return (true, true) }
+        if let s = styleSnapshot {
+            if let expH = s.expandHorizontally {
+                return (expH, s.fillHorizontally ?? s.fill)
+            }
+            if s.expandVertically == true {
+                return (false, false)
+            }
+        }
+        return expansionFlags
+    }
+
+    internal var extractedRootBackground: EInkColor? {
+        if let s = styleSnapshot, s.isHidden {
+            return nil
+        }
+        switch self {
+        case .vstack(_, _, let children, let style),
+             .hstack(_, _, let children, let style),
+             .zstack(_, let children, let style):
+            return style.backgroundColor ?? children.first?.extractedRootBackground
+        case .scrollView(_, let child, let style),
+             .card(_, let child, let style):
+            return style.backgroundColor ?? child.extractedRootBackground
+        default:
+            return styleSnapshot?.backgroundColor
+        }
     }
 }

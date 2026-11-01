@@ -80,6 +80,8 @@ public struct EnvironmentValues: @unchecked Sendable {
     public var rename: (() -> Void)? = nil
     internal var activeFocusBridge: _FocusBridge? = nil
     internal var activeOnSubmit: (() -> Void)? = nil
+    internal var pickerStyleOverride: KindlePickerStyle? = nil
+    internal var tabViewStyleOverride: KindleTabViewStyle? = nil
 
     public var colorScheme: KindleColorScheme {
         get { colorSchemeOverride ?? KindleStateRegistry.shared.colorScheme }

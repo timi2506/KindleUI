@@ -166,16 +166,17 @@ extension KindleWikiRootView {
     ) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             if let infobox = infobox {
-                HStack(alignment: .center, spacing: 8) {
+                HStack(alignment: .top, spacing: 8) {
                     Icon(.book, size: 18)
-                        .foregroundColor(theme.foreground)
+                        .foregroundColor(theme.accent)
                     Text(infobox.title ?? activeArticleTitle)
-                        .font(.system(size: 14, weight: .bold, design: .serif))
-                        .foregroundColor(theme.foreground)
-                        .lineLimit(1)
-                    Spacer()
+                        .font(.system(size: 13, weight: .bold, design: .serif))
+                        .foregroundColor(theme.accent)
+                        .lineWrap(true)
+                        .lineLimit(2)
+                        .expand(true, fill: true)
                 }
-                Divider(thickness: 1, color: theme.subtleBorder)
+                Divider(thickness: 1, color: theme.accentBorder)
             }
 
             if let url = imageURL {
@@ -188,7 +189,7 @@ extension KindleWikiRootView {
                     )
                     .padding(EdgeInsets(top: 12, leading: 14, bottom: 12, trailing: 14))
                     .background(theme.cardBackground, in: .rect(cornerRadius: 12))
-                    .overlay(theme.subtleBorder, in: .rect(cornerRadius: 12), lineWidth: 1)
+                    .overlay(theme.accentBorder, in: .rect(cornerRadius: 12), lineWidth: 1)
 
                     if !imageCaption.isEmpty {
                         Text(compactPreview(imageCaption, maxChars: 135))
@@ -201,10 +202,10 @@ extension KindleWikiRootView {
 
                     HStack(alignment: .center, spacing: 6) {
                         Icon(.search, size: 16)
-                            .foregroundColor(theme.mutedForeground)
+                            .foregroundColor(theme.linkAccent)
                         Text("Tap figure to enlarge")
                             .font(.system(size: 12, weight: .bold))
-                            .foregroundColor(theme.mutedForeground)
+                            .foregroundColor(theme.linkAccent)
                     }
                 }
                 .onTapGesture {
@@ -218,7 +219,7 @@ extension KindleWikiRootView {
                 let visibleRows = displayedInfoboxRows(infobox, hasImage: imageURL != nil)
                 if !visibleRows.isEmpty {
                     if imageURL != nil {
-                        Divider(thickness: 1, color: theme.subtleBorder)
+                        Divider(thickness: 1, color: theme.accentBorder)
                     }
                     VStack(alignment: .leading, spacing: 6) {
                         ForEach(0..<visibleRows.count, id: \.self) { rIdx in
@@ -226,8 +227,9 @@ extension KindleWikiRootView {
                             HStack(alignment: .top, spacing: 10) {
                                 Text(row[0])
                                     .font(.system(size: 11, weight: .bold))
-                                    .foregroundColor(theme.mutedForeground)
+                                    .foregroundColor(theme.accent)
                                     .lineWrap(true)
+                                    .lineLimit(2)
                                     .frame(width: 146, alignment: .topLeading)
                                 Text(row.count > 1 ? row[1] : "")
                                     .font(.system(size: 12, weight: .regular, design: .serif))
@@ -238,7 +240,7 @@ extension KindleWikiRootView {
                                     .expand(true, fill: true)
                             }
                             if rIdx < visibleRows.count - 1 {
-                                Divider(thickness: 1, color: theme.subtleBorder)
+                                Divider(thickness: 1, color: theme.accentBorder)
                             }
                         }
                     }
@@ -246,8 +248,8 @@ extension KindleWikiRootView {
             }
         }
         .padding(EdgeInsets(top: 12, leading: 14, bottom: 12, trailing: 14))
-        .background(theme.panelBackground, in: .rect(cornerRadius: 16))
-        .overlay(theme.subtleBorder, in: .rect(cornerRadius: 16), lineWidth: 1)
+        .background(theme.accentPanel, in: .rect(cornerRadius: 16))
+        .overlay(theme.accentBorder, in: .rect(cornerRadius: 16), lineWidth: 1)
         .frame(width: 484)
     }
 
@@ -257,7 +259,7 @@ extension KindleWikiRootView {
         case .subheading:
             Text(block.text)
                 .font(.system(size: readerFontSize + 4, weight: .bold, design: .serif))
-                .foregroundColor(theme.foreground)
+                .foregroundColor(theme.accent)
                 .padding(EdgeInsets(top: 10, leading: 0, bottom: 4, trailing: 0))
 
         case .image(let url):
@@ -281,11 +283,11 @@ extension KindleWikiRootView {
             }) {
                 HStack(alignment: .center, spacing: 16) {
                     Icon(.book, size: 22)
-                        .foregroundColor(theme.foreground)
+                        .foregroundColor(theme.linkAccent)
                     VStack(alignment: .leading, spacing: 4) {
                         Text(label)
                             .font(.system(size: readerFontSize, weight: .bold, design: .serif))
-                            .foregroundColor(theme.foreground)
+                            .foregroundColor(theme.linkAccent)
                             .lineLimit(1)
                         if !detail.isEmpty {
                             Text(detail)
@@ -297,7 +299,7 @@ extension KindleWikiRootView {
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     Icon(.chevronRight, size: 20)
-                        .foregroundColor(theme.mutedForeground)
+                        .foregroundColor(theme.linkAccent)
                 }
                 .padding(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16))
             }
@@ -313,16 +315,16 @@ extension KindleWikiRootView {
                     if let title = tbl.title, !title.isEmpty {
                         HStack(spacing: 8) {
                             Icon(.document, size: 18)
-                                .foregroundColor(theme.mutedForeground)
+                                .foregroundColor(theme.accent)
                             Text(title)
                                 .font(.system(size: 14, weight: .bold, design: .serif))
-                                .foregroundColor(theme.foreground)
+                                .foregroundColor(theme.accent)
                                 .lineLimit(1)
                             Spacer()
                         }
                         .padding(EdgeInsets(top: 8, leading: 14, bottom: 8, trailing: 14))
-                        .background(theme.panelBackground)
-                        Divider(thickness: 1, color: theme.border)
+                        .background(theme.accentPanel)
+                        Divider(thickness: 1, color: theme.accentBorder)
                     }
 
                     HStack(spacing: 12) {
@@ -331,14 +333,15 @@ extension KindleWikiRootView {
                             Text(headerText)
                                 .lineLimit(1)
                                 .font(.system(size: 13, weight: .bold))
-                                .foregroundColor(theme.foreground)
+                                .foregroundColor(theme.accent)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                         }
                     }
+                    .homogeneous(true)
                     .padding(EdgeInsets(top: 10, leading: 14, bottom: 10, trailing: 14))
-                    .background(theme.panelBackground)
+                    .background(theme.accentPanel)
 
-                    Divider(thickness: 1, color: theme.border)
+                    Divider(thickness: 1, color: theme.accentBorder)
 
                     ForEach(0..<tbl.rows.count, id: \.self) { rIdx in
                         let row = tbl.rows[rIdx]
@@ -353,6 +356,7 @@ extension KindleWikiRootView {
                                     .frame(maxWidth: .infinity, alignment: .leading)
                             }
                         }
+                        .homogeneous(true)
                         .padding(EdgeInsets(top: 8, leading: 14, bottom: 8, trailing: 14))
                         .background((rIdx % 2 == 1) ? theme.panelBackground : theme.cardBackground)
 
@@ -368,94 +372,141 @@ extension KindleWikiRootView {
         }
     }
 
-    // MARK: - Enlarged Image Inspector Dialog / Sheet
+    // MARK: - Enlarged Image Inspector Sheet
+
+    internal var allArticleFigures: [(url: String, caption: String, sectionTitle: String)] {
+        var result: [(url: String, caption: String, sectionTitle: String)] = []
+        var seen: Set<String> = []
+        for page in wikiPages {
+            for block in page.blocks {
+                if case .image(let url) = block.kind, !url.isEmpty, !seen.contains(url) {
+                    seen.insert(url)
+                    result.append((url: url, caption: block.text, sectionTitle: page.sectionTitle))
+                }
+            }
+        }
+        if let leadURL = activeArticleLeadImageURL, !leadURL.isEmpty, !seen.contains(leadURL) {
+            seen.insert(leadURL)
+            result.append((url: leadURL, caption: activeArticleDescription, sectionTitle: "Overview"))
+        }
+        for secIdx in activeArticleSectionImages.keys.sorted() {
+            let secTitle = (secIdx < wikiSections.count) ? wikiSections[secIdx].title : activeArticleTitle
+            for fig in activeArticleSectionImages[secIdx] ?? [] where !fig.url.isEmpty && !seen.contains(fig.url) {
+                seen.insert(fig.url)
+                result.append((url: fig.url, caption: fig.caption, sectionTitle: secTitle))
+            }
+        }
+        if let currentURL = enlargedImageURL, !currentURL.isEmpty, !seen.contains(currentURL) {
+            result.insert((url: currentURL, caption: enlargedImageCaption, sectionTitle: activeArticleTitle), at: 0)
+        }
+        return result
+    }
+
+    internal var enlargedImageSheetTitle: String {
+        let figures = allArticleFigures
+        if figures.count > 1,
+           let currentURL = enlargedImageURL,
+           let idx = figures.firstIndex(where: { $0.url == currentURL }) {
+            let sec = figures[idx].sectionTitle
+            return sec.isEmpty
+                ? "Figure \(idx + 1) of \(figures.count)"
+                : "Figure \(idx + 1) of \(figures.count)  ·  \(sec)"
+        }
+        return activeArticleTitle.isEmpty ? "Figure Inspector" : activeArticleTitle
+    }
 
     @ViewBuilder
     internal func enlargedImageView(theme: KindleTheme) -> some View {
-        VStack(alignment: .leading, spacing: 18) {
-            // Balanced Header Bar
-            HStack(alignment: .center, spacing: 18) {
-                Button(action: { showImageDetail = false }) {
-                    HStack(spacing: 8) {
-                        Icon(.chevronLeft, size: 20)
-                        Text("Back to Article")
-                            .font(.system(size: 14, weight: .bold))
-                    }
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.regular)
+        let figures = allArticleFigures
+        let currentIdx = enlargedImageURL.flatMap { url in
+            figures.firstIndex(where: { $0.url == url })
+        }
 
-                Spacer()
-
-                Text(activeArticleTitle.isEmpty ? "Figure Inspector" : activeArticleTitle)
-                    .font(.system(size: 18, weight: .bold, design: .serif))
-                    .foregroundColor(theme.foreground)
-                    .multilineTextAlignment(.center)
-                    .lineLimit(1)
-
-                Spacer()
-
-                Button(action: { showImageDetail = false }) {
-                    HStack(spacing: 8) {
-                        Icon(.close, size: 20)
-                        Text("Close")
-                            .font(.system(size: 14, weight: .bold))
-                    }
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.regular)
-            }
-            .padding(12)
-            .background(theme.panelBackground, in: .rect(cornerRadius: 28))
-            .overlay(theme.subtleBorder, in: .rect(cornerRadius: 28), lineWidth: 1)
-
-            // Centered Image Card
+        VStack(alignment: .center, spacing: 18) {
             if let imgURL = enlargedImageURL {
-                VStack(alignment: .center, spacing: 20) {
-                    Spacer()
+                AsyncImage(
+                    url: imgURL,
+                    altText: enlargedImageCaption.isEmpty ? activeArticleTitle : enlargedImageCaption,
+                    width: 1710,
+                    height: 1380
+                )
+                .padding(14)
+                .background(theme.panelBackground, in: .rect(cornerRadius: 20))
+                .overlay(theme.subtleBorder, in: .rect(cornerRadius: 20), lineWidth: 1)
+                .onTapGesture {
+                    showImageDetail = false
+                }
 
-                    AsyncImage(
-                        url: imgURL,
-                        altText: enlargedImageCaption.isEmpty ? activeArticleTitle : enlargedImageCaption,
-                        width: 1280,
-                        height: 1020
-                    )
-                    .padding(14)
-                    .background(theme.cardBackground, in: .rect(cornerRadius: 20))
-                    .overlay(theme.subtleBorder, in: .rect(cornerRadius: 20), lineWidth: 1)
-
-                    if !enlargedImageCaption.isEmpty {
-                        VStack(alignment: .center, spacing: 8) {
-                            Text(enlargedImageCaption)
-                                .font(.system(size: 16, weight: .regular, design: .serif))
-                                .foregroundColor(theme.foreground)
-                                .lineWrap(true)
-                                .multilineTextAlignment(.center)
-                        }
-                        .padding(EdgeInsets(top: 16, leading: 28, bottom: 16, trailing: 28))
-                        .background(theme.panelBackground, in: .rect(cornerRadius: 16))
-                        .overlay(theme.subtleBorder, in: .rect(cornerRadius: 16), lineWidth: 1)
-                        .frame(maxWidth: 1280)
+                if !enlargedImageCaption.isEmpty {
+                    VStack(alignment: .center, spacing: 6) {
+                        Text(enlargedImageCaption)
+                            .font(.system(size: 16, weight: .regular, design: .serif))
+                            .foregroundColor(theme.foreground)
+                            .lineWrap(true)
+                            .lineLimit(4)
+                            .multilineTextAlignment(.center)
                     }
+                    .padding(EdgeInsets(top: 14, leading: 24, bottom: 14, trailing: 24))
+                    .background(theme.accentPanel, in: .rect(cornerRadius: 16))
+                    .overlay(theme.accentBorder, in: .rect(cornerRadius: 16), lineWidth: 1)
+                    .expand(false, fill: true)
+                }
 
-                    Text("Tap anywhere or tap Back to return to reading")
+                if figures.count > 1, let idx = currentIdx {
+                    HStack(alignment: .center, spacing: 18) {
+                        Button(action: {
+                            let prevIdx = (idx - 1 + figures.count) % figures.count
+                            let prevFig = figures[prevIdx]
+                            enlargedImageURL = prevFig.url
+                            enlargedImageCaption = prevFig.caption
+                            let lookaheadIdx = (prevIdx - 1 + figures.count) % figures.count
+                            AsyncImage.prefetch(url: figures[lookaheadIdx].url)
+                        }) {
+                            HStack(spacing: 8) {
+                                Icon(.chevronLeft, size: 20)
+                                Text("Prev Figure")
+                                    .font(.system(size: 14, weight: .bold))
+                            }
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.regular)
+
+                        Spacer()
+
+                        Text("Tap image or outside sheet to return to article")
+                            .font(.caption)
+                            .foregroundColor(theme.mutedForeground)
+                            .multilineTextAlignment(.center)
+
+                        Spacer()
+
+                        Button(action: {
+                            let nextIdx = (idx + 1) % figures.count
+                            let nextFig = figures[nextIdx]
+                            enlargedImageURL = nextFig.url
+                            enlargedImageCaption = nextFig.caption
+                            let lookaheadIdx = (nextIdx + 1) % figures.count
+                            AsyncImage.prefetch(url: figures[lookaheadIdx].url)
+                        }) {
+                            HStack(spacing: 8) {
+                                Text("Next Figure")
+                                    .font(.system(size: 14, weight: .bold))
+                                Icon(.chevronRight, size: 20)
+                            }
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.regular)
+                    }
+                    .expand(false, fill: true)
+                } else {
+                    Text("Tap image or outside sheet to return to reading")
                         .font(.caption)
                         .foregroundColor(theme.mutedForeground)
                         .multilineTextAlignment(.center)
-
-                    Spacer()
                 }
-                .expand(true, fill: true)
-            } else {
-                Spacer()
             }
         }
-        .padding(EdgeInsets(top: 18, leading: 32, bottom: 18, trailing: 32))
-        .background(theme.background)
-        .expand(true, fill: true)
-        .onTapGesture {
-            showImageDetail = false
-        }
+        .expand(false, fill: true)
     }
 
     // MARK: - Reading Appearance (Aa) & Language Selector Sheets
@@ -523,6 +574,7 @@ extension KindleWikiRootView {
                             readerFontSize = preset.size
                             rebuildWikipediaPagination()
                         }
+                        .tint(theme.accent)
                         .buttonStyle(isSelected ? .borderedProminent : .bordered)
                         .controlSize(.regular)
                     }
@@ -535,10 +587,10 @@ extension KindleWikiRootView {
             VStack(alignment: .leading, spacing: 12) {
                 HStack(alignment: .center, spacing: 14) {
                     Icon(isDark ? .moon : .sun, size: 24)
-                        .foregroundColor(theme.foreground)
+                        .foregroundColor(theme.accent)
                     Text("E-Ink Display Theme")
                         .font(.system(size: 18, weight: .bold, design: .serif))
-                        .foregroundColor(theme.foreground)
+                        .foregroundColor(theme.accent)
                     Spacer()
                 }
 
@@ -552,6 +604,7 @@ extension KindleWikiRootView {
                                 .font(.system(size: 15, weight: .bold))
                         }
                     }
+                    .tint(theme.accent)
                     .buttonStyle(!isDark ? .borderedProminent : .bordered)
                     .controlSize(.regular)
 
@@ -564,6 +617,7 @@ extension KindleWikiRootView {
                                 .font(.system(size: 15, weight: .bold))
                         }
                     }
+                    .tint(theme.accent)
                     .buttonStyle(isDark ? .borderedProminent : .bordered)
                     .controlSize(.regular)
                 }
@@ -573,7 +627,7 @@ extension KindleWikiRootView {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Typography Preview (\(readerFontSize)pt Bookerly)")
                     .font(.caption)
-                    .foregroundColor(theme.mutedForeground)
+                    .foregroundColor(theme.accent)
                 Text("Electronic paper reflects ambient light like ordinary ink on paper, providing crisp, glare-free reading comfort.")
                     .font(.bookerly(size: readerFontSize))
                     .foregroundColor(theme.foreground)
@@ -581,8 +635,8 @@ extension KindleWikiRootView {
                     .lineLimit(2)
             }
             .padding(EdgeInsets(top: 14, leading: 18, bottom: 14, trailing: 18))
-            .background(theme.panelBackground, in: .rect(cornerRadius: 16))
-            .overlay(theme.subtleBorder, in: .rect(cornerRadius: 16), lineWidth: 1)
+            .background(theme.accentPanel, in: .rect(cornerRadius: 16))
+            .overlay(theme.accentBorder, in: .rect(cornerRadius: 16), lineWidth: 1)
         }
         .expand(false, fill: true)
     }
@@ -737,6 +791,7 @@ extension KindleWikiRootView {
                                 .font(.system(size: 14, weight: .bold))
                         }
                     }
+                    .tint(theme.savedAccent)
                     .buttonStyle(offlineReady ? .borderedProminent : .bordered)
                     .controlSize(.regular)
 
@@ -749,13 +804,14 @@ extension KindleWikiRootView {
                                 .font(.system(size: 14, weight: .bold))
                         }
                     }
+                    .tint(theme.featuredAccent)
                     .buttonStyle(saved ? .borderedProminent : .bordered)
                     .controlSize(.regular)
                 }
             }
             .padding(12)
-            .background(theme.panelBackground, in: .rect(cornerRadius: 28))
-            .overlay(theme.subtleBorder, in: .rect(cornerRadius: 28), lineWidth: 1)
+            .background(theme.accentPanel, in: .rect(cornerRadius: 28))
+            .overlay(theme.accentBorder, in: .rect(cornerRadius: 28), lineWidth: 1)
 
             if wikiLoading {
                 loadingDisplay(
@@ -823,14 +879,14 @@ extension KindleWikiRootView {
                             VStack(alignment: .leading, spacing: 6) {
                                 Text(activeArticleTitle)
                                     .font(.system(size: 28, weight: .bold, design: .serif))
-                                    .foregroundColor(theme.foreground)
+                                    .foregroundColor(theme.accent)
                                 if !activeArticleDescription.isEmpty {
                                     Text(activeArticleDescription)
                                         .font(.system(size: 15, weight: .regular, design: .serif))
                                         .foregroundColor(theme.mutedForeground)
                                         .lineWrap(true)
                                 }
-                                Divider(thickness: 1, color: theme.subtleBorder)
+                                Divider(thickness: 1, color: theme.accentBorder)
                             }
                             .padding(.bottom, 6)
                         } else {
@@ -838,7 +894,7 @@ extension KindleWikiRootView {
                             HStack(alignment: .center, spacing: 12) {
                                 Text(activeArticleTitle)
                                     .font(.system(size: 14, weight: .bold, design: .serif))
-                                    .foregroundColor(theme.mutedForeground)
+                                    .foregroundColor(theme.accent)
                                     .lineLimit(1)
                                 Spacer()
                                 Text(page.sectionTitle)
@@ -846,7 +902,7 @@ extension KindleWikiRootView {
                                     .foregroundColor(theme.mutedForeground)
                                     .lineLimit(1)
                             }
-                            Divider(thickness: 1, color: theme.subtleBorder)
+                            Divider(thickness: 1, color: theme.accentBorder)
                         }
 
                         let displayRows = buildReaderDisplayRows(for: page, pageIndex: idx)
@@ -966,11 +1022,11 @@ extension KindleWikiRootView {
             HStack(alignment: .center, spacing: 18) {
                 HStack(alignment: .center, spacing: 14) {
                     Icon(.document, size: 28)
-                        .foregroundColor(theme.foreground)
+                        .foregroundColor(theme.accent)
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Table of Contents")
                             .font(.system(size: 24, weight: .bold, design: .serif))
-                            .foregroundColor(theme.foreground)
+                            .foregroundColor(theme.accent)
                         Text("“\(activeArticleTitle)” · \(wikiSections.count) Sections · \(pages.count) Pages")
                             .font(.system(size: 14, weight: .regular))
                             .foregroundColor(theme.mutedForeground)
@@ -982,12 +1038,13 @@ extension KindleWikiRootView {
                 Button("Done ✕") {
                     showChaptersModal = false
                 }
+                .tint(theme.accent)
                 .buttonStyle(.borderedProminent)
                 .controlSize(.regular)
             }
             .padding(EdgeInsets(top: 12, leading: 18, bottom: 12, trailing: 12))
-            .background(theme.panelBackground, in: .rect(cornerRadius: 28))
-            .overlay(theme.subtleBorder, in: .rect(cornerRadius: 28), lineWidth: 1)
+            .background(theme.accentPanel, in: .rect(cornerRadius: 28))
+            .overlay(theme.accentBorder, in: .rect(cornerRadius: 28), lineWidth: 1)
 
             if sectionPages.isEmpty {
                 VStack(alignment: .center, spacing: 0) {
@@ -1164,13 +1221,14 @@ extension KindleWikiRootView {
                                 .font(.system(size: 14, weight: .bold))
                         }
                     }
+                    .tint(theme.featuredAccent)
                     .buttonStyle(saved ? .borderedProminent : .bordered)
                     .controlSize(.regular)
                 }
             }
             .padding(12)
-            .background(theme.panelBackground, in: .rect(cornerRadius: 28))
-            .overlay(theme.subtleBorder, in: .rect(cornerRadius: 28), lineWidth: 1)
+            .background(theme.wiktionaryPanel, in: .rect(cornerRadius: 28))
+            .overlay(theme.accentBorder, in: .rect(cornerRadius: 28), lineWidth: 1)
 
             if wiktLoading {
                 loadingDisplay(
@@ -1237,15 +1295,15 @@ extension KindleWikiRootView {
                             HStack(alignment: .center, spacing: 14) {
                                 Text(activeWord)
                                     .font(.system(size: 28, weight: .bold, design: .serif))
-                                    .foregroundColor(theme.foreground)
+                                    .foregroundColor(theme.wiktionaryAccent)
                                 if let ipa = wiktMetadata.ipaBadge {
                                     Text(ipa)
                                         .font(.system(size: 16, weight: .regular, design: .serif))
-                                        .foregroundColor(theme.mutedForeground)
+                                        .foregroundColor(theme.featuredAccent)
                                 }
                                 Spacer()
                             }
-                            Divider(thickness: 1, color: theme.subtleBorder)
+                            Divider(thickness: 1, color: theme.accentBorder)
                         }
 
                         switch page.kind {
@@ -1253,7 +1311,7 @@ extension KindleWikiRootView {
                             HStack(alignment: .center, spacing: 12) {
                                 Text(pos)
                                     .font(.system(size: 19, weight: .bold, design: .serif))
-                                    .foregroundColor(theme.foreground)
+                                    .foregroundColor(theme.wiktionaryAccent)
                                 Spacer()
                                 Text(lang)
                                     .font(.system(size: 14, weight: .regular, design: .serif))
@@ -1265,7 +1323,7 @@ extension KindleWikiRootView {
                                     HStack(alignment: .top, spacing: 10) {
                                         Text("\(sense.number).")
                                             .font(.system(size: readerFontSize, weight: .bold, design: .serif))
-                                            .foregroundColor(theme.foreground)
+                                            .foregroundColor(theme.wiktionaryAccent)
                                         Text(sense.text)
                                             .font(.bookerly(size: readerFontSize))
                                             .foregroundColor(theme.foreground)
@@ -1276,7 +1334,7 @@ extension KindleWikiRootView {
                                     if let firstExample = sense.examples.first {
                                         HStack(spacing: 10) {
                                             Rectangle()
-                                                .fill(theme.subtleBorder)
+                                                .fill(theme.warmBorder)
                                                 .frame(width: 4)
                                             Text("“\(firstExample)”")
                                                 .font(.bookerly(size: max(14, readerFontSize - 2), italic: true))
@@ -1285,6 +1343,7 @@ extension KindleWikiRootView {
                                                 .frame(maxWidth: .infinity)
                                         }
                                         .padding(EdgeInsets(top: 6, leading: 10, bottom: 6, trailing: 6))
+                                        .background(theme.warmPanel, in: .rect(cornerRadius: 10))
                                     }
 
                                     if !sense.relatedWords.isEmpty {

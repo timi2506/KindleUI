@@ -233,6 +233,7 @@ public struct Text: View, _PrimitiveView {
 
     public func lineLimit(_ limit: Int?) -> Text {
         var copy = self
+        copy.style.lineLimit = limit
         if let limit = limit {
             copy.wrap = limit > 1
         } else {

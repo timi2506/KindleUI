@@ -9,45 +9,6 @@ extension KindlePreviewServer {
         case zstack
     }
 
-    internal struct RenderContext {
-        var font: KindleFont? = .body
-        var fg: EInkColor? = nil
-        var bg: EInkColor = .white
-        var buttonStyle: KindleButtonStyle? = nil
-        var toggleStyle: KindleToggleStyle? = nil
-        var controlSize: KindleControlSize? = nil
-        var opacity: Double = 1.0
-        var isDisabled: Bool = false
-        var isBehindModal: Bool = false
-
-        func merging(_ style: ViewStyle) -> RenderContext {
-            var next = self
-            if let f = style.font { next.font = f }
-            if let fg = style.foregroundColor { next.fg = fg }
-            if let bg = style.backgroundColor {
-                next.bg = blend(bg, localOpacity: style.opacity, against: self.bg)
-            }
-            if let bs = style.buttonStyle { next.buttonStyle = bs }
-            if let ts = style.toggleStyle { next.toggleStyle = ts }
-            if let cs = style.controlSize { next.controlSize = cs }
-            next.opacity = effectiveOpacity(style.opacity)
-            if style.isDisabled { next.isDisabled = true }
-            return next
-        }
-
-        func effectiveOpacity(_ localOpacity: Double) -> Double {
-            max(0.0, min(1.0, opacity * localOpacity))
-        }
-
-        func blend(_ color: EInkColor, localOpacity: Double = 1.0, against targetBg: EInkColor? = nil) -> EInkColor {
-            let alpha = effectiveOpacity(localOpacity)
-            guard alpha < 0.999 else { return color }
-            let bgRef = targetBg ?? bg
-            let blended = Double(bgRef.grayLevel) + (Double(color.grayLevel) - Double(bgRef.grayLevel)) * alpha
-            return EInkColor(grayLevel: UInt8(max(0.0, min(255.0, blended.rounded()))))
-        }
-    }
-
     internal func renderNodeToHTML(
         _ node: RenderNode,
         path: String,
@@ -692,9 +653,12 @@ extension KindlePreviewServer {
                 var comps = URLComponents()
                 comps.queryItems = [URLQueryItem(name: "path", value: filePath)]
                 let queryStr = comps.percentEncodedQuery ?? ""
+                let filterCSS = KindleDevice.shared.isColorDisplay
+                    ? "filter: saturate(1.12) contrast(1.04);"
+                    : "filter: grayscale(100%) contrast(1.06);"
                 coreHTML = """
                 <img class="k-image" src="/file?\(queryStr)" alt="\(Self.escapeHTML(altText))"
-                    style="\(wStyle) \(hStyle) object-fit: contain; filter: grayscale(100%) contrast(1.06); display: block; margin: 0 auto;" />
+                    style="\(wStyle) \(hStyle) object-fit: contain; \(filterCSS) display: block; margin: 0 auto;" />
                 """
             } else {
                 let icon = KindleIconName(systemName: filePath.isEmpty ? altText : filePath)
@@ -786,97 +750,21 @@ extension KindlePreviewServer {
         parentVAlign: VerticalAlignment
     ) -> String {
         let theme = KindleTheme.current
-        let role = style.buttonStyle ?? ctx.buttonStyle ?? .automatic
-        let controlSize = style.controlSize ?? ctx.controlSize ?? .regular
-        let isDisabled = !isEnabled
-
-        var defaultBg: EInkColor?
-        var defaultFg: EInkColor
-        var defaultBorderColor: EInkColor
-        var defaultBorderWidth: Int
-        var defaultRadius: Int
-        var defaultShadow: KindleShadow?
-
-        switch role {
-        case .automatic, .bordered:
-            defaultBg = theme.cardBackground
-            defaultFg = isDisabled ? theme.mutedForeground : theme.foreground
-            defaultBorderColor = isDisabled ? theme.subtleBorder : theme.border
-            defaultBorderWidth = 1
-            defaultRadius = 16
-            defaultShadow = nil
-
-        case .unbordered:
-            defaultBg = theme.panelBackground
-            defaultFg = isDisabled ? theme.mutedForeground : theme.foreground
-            defaultBorderColor = theme.panelBackground
-            defaultBorderWidth = 0
-            defaultRadius = 16
-            defaultShadow = nil
-
-        case .borderedProminent:
-            defaultBg = isDisabled ? theme.panelBackground : (style.tintColor ?? theme.foreground)
-            defaultFg = isDisabled ? theme.mutedForeground : theme.background
-            defaultBorderColor = isDisabled ? theme.subtleBorder : (style.tintColor ?? theme.border)
-            defaultBorderWidth = 1
-            defaultRadius = 16
-            defaultShadow = nil
-
-        case .capsule:
-            defaultBg = theme.panelBackground
-            defaultFg = isDisabled ? theme.mutedForeground : theme.foreground
-            defaultBorderColor = theme.subtleBorder
-            defaultBorderWidth = 1
-            defaultRadius = 999
-            defaultShadow = nil
-
-        case .card:
-            defaultBg = theme.cardBackground
-            defaultFg = isDisabled ? theme.mutedForeground : theme.foreground
-            defaultBorderColor = theme.subtleBorder
-            defaultBorderWidth = 1
-            defaultRadius = 18
-            defaultShadow = nil
-
-        case .plain, .borderless:
-            defaultBg = nil
-            defaultFg = isDisabled ? theme.mutedForeground : (style.tintColor ?? theme.foreground)
-            defaultBorderColor = theme.border
-            defaultBorderWidth = 0
-            defaultRadius = 14
-            defaultShadow = nil
-        }
-
-        let rawBg = style.backgroundColor ?? defaultBg
-        let effectiveBg = rawBg.map { ctx.blend($0, localOpacity: style.opacity) }
-        let effectiveFg = ctx.blend(
-            style.foregroundColor ?? defaultFg,
-            localOpacity: style.opacity,
-            against: effectiveBg ?? ctx.bg
+        let visuals = ctx.resolveButtonVisuals(
+            style: style,
+            theme: theme,
+            isDisabledOverride: !isEnabled
         )
-        let effectiveBorderColor = ctx.blend(style.borderColor ?? defaultBorderColor, localOpacity: style.opacity)
-        let effectiveBorderWidth = style.borderWidth > 0 ? style.borderWidth : defaultBorderWidth
-        let effectiveRadius = style.cornerRadius ?? defaultRadius
-        let effectiveShadow = style.shadow ?? defaultShadow
-        let effectiveFont = style.font ?? ctx.font ?? KindleFont.system(size: controlSize.defaultFontSize, weight: .bold)
-
-        let innerPad: EdgeInsets
-        let outerPad: EdgeInsets?
-        if let contentPad = style.contentPadding {
-            innerPad = contentPad
-            outerPad = style.padding
-        } else if let pad = style.padding {
-            innerPad = pad
-            outerPad = nil
-        } else {
-            innerPad = controlSize.defaultPadding
-            outerPad = nil
-        }
-
-        var childCtx = ctx.merging(style)
-        childCtx.font = effectiveFont
-        childCtx.fg = effectiveFg
-        if let bg = effectiveBg { childCtx.bg = bg }
+        let effectiveBg = visuals.effectiveBg
+        let effectiveFg = visuals.effectiveFg
+        let effectiveBorderColor = visuals.effectiveBorderColor
+        let effectiveBorderWidth = visuals.effectiveBorderWidth
+        let effectiveRadius = visuals.effectiveRadius
+        let effectiveShadow = visuals.effectiveShadow
+        let effectiveFont = visuals.effectiveFont
+        let innerPad = visuals.innerPad
+        let outerPad = visuals.outerPad
+        let childCtx = visuals.childCtx
 
         let hAlign = style.alignment?.horizontal ?? .center
         let textAlign: String
@@ -1332,25 +1220,10 @@ extension KindlePreviewServer {
         """
     }
 
-    // MARK: - Expansion & Alignment Flag Calculation (1:1 with GTK2Renderer.swift lines 1683–1798)
+    // MARK: - Expansion & Alignment Flag Calculation (1:1 with GTK2Renderer)
 
     internal func nodeWantsFullWidth(_ node: RenderNode) -> Bool {
-        if case .spacer = node { return true }
-        if let s = node.styleSnapshot, (s.expandHorizontally == true || s.fillHorizontally == true || s.expand) {
-            return true
-        }
-        switch node {
-        case .vstack(_, _, let children, _),
-             .hstack(_, _, let children, _),
-             .zstack(_, let children, _),
-             .group(let children):
-            return children.contains { nodeWantsFullWidth($0) }
-        case .card(_, let child, _),
-             .scrollView(_, let child, _):
-            return nodeWantsFullWidth(child)
-        default:
-            return false
-        }
+        node.wantsFullWidth
     }
 
     internal func childFillsHorizontallyInVStack(_ child: RenderNode, defaultAlignment: HorizontalAlignment) -> Bool {
@@ -1375,7 +1248,7 @@ extension KindlePreviewServer {
             if !s.fill { return false }
             // Inside a centered VStack, an HStack without a Spacer or expanding child
             // (e.g. a centered pair of action buttons) shrinks to fit so it centers cleanly.
-            if defaultAlignment == .center && s.backgroundColor == nil && s.borderWidth == 0 && !children.contains(where: { nodeWantsFullWidth($0) }) {
+            if defaultAlignment == .center && s.backgroundColor == nil && s.borderWidth == 0 && !children.contains(where: { $0.wantsFullWidth }) {
                 return false
             }
             return true
@@ -1420,56 +1293,15 @@ extension KindlePreviewServer {
     }
 
     internal func verticalExpansionFlags(for node: RenderNode) -> (expand: Bool, fill: Bool) {
-        if case .spacer = node { return (true, true) }
-        if let s = node.styleSnapshot {
-            if let expV = s.expandVertically {
-                return (expV, s.fillVertically ?? s.fill)
-            }
-            if s.expandHorizontally == true {
-                return (false, false)
-            }
-        }
-        return expansionFlags(for: node)
+        node.verticalExpansionFlags
     }
 
     internal func horizontalExpansionFlags(for node: RenderNode) -> (expand: Bool, fill: Bool) {
-        if case .spacer = node { return (true, true) }
-        if let s = node.styleSnapshot {
-            if let expH = s.expandHorizontally {
-                return (expH, s.fillHorizontally ?? s.fill)
-            }
-            if s.expandVertically == true {
-                return (false, false)
-            }
-        }
-        return expansionFlags(for: node)
+        node.horizontalExpansionFlags
     }
 
     internal func expansionFlags(for node: RenderNode) -> (expand: Bool, fill: Bool) {
-        switch node {
-        case .spacer:
-            return (true, true)
-        case .scrollView(_, _, let style),
-             .canvas(_, _, _, _, let style),
-             .webView(_, _, _, _, _, _, _, let style),
-             .vstack(_, _, _, let style),
-             .hstack(_, _, _, let style),
-             .zstack(_, _, let style),
-             .card(_, _, let style),
-             .text(_, _, _, let style),
-             .button(_, _, _, let style),
-             .toggle(_, _, _, let style),
-             .textField(_, _, _, let style),
-             .textEditor(_, _, _, let style),
-             .slider(_, _, _, _, let style),
-             .progressBar(_, _, let style),
-             .divider(_, let style),
-             .image(_, _, let style),
-             .icon(_, _, let style):
-            return (style.expand, style.fill)
-        case .empty, .group:
-            return (false, true)
-        }
+        node.expansionFlags
     }
 
     // MARK: - Typography, Pango Markup, and Cairo Vector Icons

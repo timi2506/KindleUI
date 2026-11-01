@@ -104,7 +104,7 @@ extension KindleWikiRootView {
 
     internal func fetchArticleFromNetwork(_ trimmed: String, generation: Int) {
         let encodedTitle = encodeWikiComponent(trimmed)
-        let extractURL = "https://en.wikipedia.org/w/api.php?action=query&prop=extracts%7Cdescription%7Cpageimages%7Clinks&piprop=thumbnail&pithumbsize=960&explaintext=1&pllimit=100&titles=\(encodedTitle)&format=json&redirects=1"
+        let extractURL = "https://en.wikipedia.org/w/api.php?action=query&prop=extracts%7Cdescription%7Cpageimages%7Clinks&piprop=thumbnail&pithumbsize=1280&explaintext=1&pllimit=100&titles=\(encodedTitle)&format=json&redirects=1"
 
         KindleHTTP.getJSON(MediaWikiExtractsResponse.self, from: extractURL, timeoutSeconds: 12) { extractResult in
             let isCurrent = generation == wikiLoadGeneration
@@ -360,6 +360,16 @@ extension KindleWikiRootView {
         }
         schedulePagination()
         recordHistory(title: cached.title, subtitle: cached.description, kind: .wikipedia)
+        if CommandLine.arguments.contains("--enlarge-image") {
+            let candidate = activeArticleSectionImages.values.flatMap { $0 }.first(where: { !$0.caption.isEmpty })
+                ?? activeArticleSectionImages.values.first?.first
+                ?? cached.leadImageURL.map { (url: $0, caption: cached.description) }
+            if let img = candidate {
+                enlargedImageURL = img.url
+                enlargedImageCaption = img.caption
+                showImageDetail = true
+            }
+        }
     }
 
     /// Articles read at least this far count as finished and reopen from the first page.

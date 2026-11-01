@@ -15,17 +15,17 @@ extension KindleWikiRootView {
                 VStack(alignment: .center, spacing: 0) {
                     Spacer()
                     Icon(icon, size: 48)
-                        .foregroundColor(theme.foreground)
+                        .foregroundColor(theme.accent)
                     Spacer()
                 }
                 .frame(width: 92, height: 92)
                 .background(theme.cardBackground, in: .rect(cornerRadius: 46))
-                .overlay(theme.subtleBorder, in: .rect(cornerRadius: 46), lineWidth: 1)
+                .overlay(theme.accentBorder, in: .rect(cornerRadius: 46), lineWidth: 1)
 
                 VStack(alignment: .center, spacing: 10) {
                     Text(title)
                         .font(.system(size: 24, weight: .bold, design: .serif))
-                        .foregroundColor(theme.foreground)
+                        .foregroundColor(theme.accent)
                         .multilineTextAlignment(.center)
 
                     Text(subtitle)
@@ -38,12 +38,13 @@ extension KindleWikiRootView {
                 .padding(.horizontal, 28)
 
                 ProgressView(value: 0.65)
+                    .tint(theme.accent)
                     .frame(width: 620, height: 18)
                     .padding(.top, 6)
             }
             .padding(EdgeInsets(top: 44, leading: 44, bottom: 48, trailing: 44))
-            .background(theme.panelBackground, in: .rect(cornerRadius: 24))
-            .overlay(theme.subtleBorder, in: .rect(cornerRadius: 24), lineWidth: 1)
+            .background(theme.accentPanel, in: .rect(cornerRadius: 24))
+            .overlay(theme.accentBorder, in: .rect(cornerRadius: 24), lineWidth: 1)
             .frame(width: 960)
 
             Spacer()
@@ -79,6 +80,7 @@ extension KindleWikiRootView {
                             activeReaderKind = .wikipedia
                             isReaderPresented = true
                         }
+                        .tint(theme.accent)
                         .buttonStyle(.borderedProminent)
                         .controlSize(.regular)
                     }
@@ -123,7 +125,7 @@ extension KindleWikiRootView {
                                 VStack(alignment: .leading, spacing: 6) {
                                     Text(hit.title)
                                         .font(.system(size: 18, weight: .bold, design: .serif))
-                                        .foregroundColor(theme.foreground)
+                                        .foregroundColor(theme.accent)
                                         .lineLimit(1)
 
                                     if !preview.isEmpty {
@@ -150,6 +152,7 @@ extension KindleWikiRootView {
                                                 .font(.system(size: 14, weight: .bold))
                                         }
                                     }
+                                    .tint(theme.featuredAccent)
                                     .buttonStyle(saved ? .borderedProminent : .bordered)
                                     .controlSize(.regular)
 
@@ -192,7 +195,7 @@ extension KindleWikiRootView {
                 VStack(alignment: .leading, spacing: 10) {
                     Text("Continue Reading")
                         .font(.system(size: 16, weight: .bold, design: .serif))
-                        .foregroundColor(theme.foreground)
+                        .foregroundColor(theme.accent)
 
                     HStack(alignment: .center, spacing: 16, homogeneous: true) {
                         ForEach(recentArticles, id: \.id) { entry in
@@ -203,7 +206,7 @@ extension KindleWikiRootView {
                             }) {
                                 HStack(alignment: .center, spacing: 12) {
                                     Icon(.book, size: 20)
-                                        .foregroundColor(theme.mutedForeground)
+                                        .foregroundColor(theme.linkAccent)
                                     Text(compactPreview(entry.title, maxChars: hasProgress ? 25 : 30))
                                         .font(.system(size: 15, weight: .bold, design: .serif))
                                         .foregroundColor(theme.foreground)
@@ -212,7 +215,7 @@ extension KindleWikiRootView {
                                     if hasProgress {
                                         Text("\(Int((progress * 100).rounded()))%")
                                             .font(.system(size: 13, weight: .bold))
-                                            .foregroundColor(theme.mutedForeground)
+                                            .foregroundColor(theme.savedAccent)
                                     }
                                     Icon(.chevronRight, size: 18)
                                         .foregroundColor(theme.mutedForeground)
@@ -235,7 +238,7 @@ extension KindleWikiRootView {
                 VStack(alignment: .leading, spacing: 10) {
                     Text(category)
                         .font(.system(size: 16, weight: .bold, design: .serif))
-                        .foregroundColor(theme.foreground)
+                        .foregroundColor(theme.accent)
 
                     ForEach(0..<topicRows.count, id: \.self) { rowIdx in
                         let rowTopics = topicRows[rowIdx]
@@ -247,7 +250,7 @@ extension KindleWikiRootView {
                                 }) {
                                     HStack(alignment: .center, spacing: 12) {
                                         Icon(.book, size: 20)
-                                            .foregroundColor(theme.mutedForeground)
+                                            .foregroundColor(theme.linkAccent)
                                         Text(topic)
                                             .font(.system(size: 15, weight: .bold, design: .serif))
                                             .foregroundColor(theme.foreground)
@@ -299,6 +302,7 @@ extension KindleWikiRootView {
                             activeReaderKind = .wiktionary
                             isReaderPresented = true
                         }
+                        .tint(theme.wiktionaryAccent)
                         .buttonStyle(.borderedProminent)
                         .controlSize(.regular)
                     }
@@ -343,7 +347,7 @@ extension KindleWikiRootView {
                                 VStack(alignment: .leading, spacing: 6) {
                                     Text(hit.title)
                                         .font(.system(size: 18, weight: .bold, design: .serif))
-                                        .foregroundColor(theme.foreground)
+                                        .foregroundColor(theme.wiktionaryAccent)
                                         .lineLimit(1)
 
                                     if !preview.isEmpty {
@@ -370,6 +374,7 @@ extension KindleWikiRootView {
                                                 .font(.system(size: 14, weight: .bold))
                                         }
                                     }
+                                    .tint(theme.featuredAccent)
                                     .buttonStyle(saved ? .borderedProminent : .bordered)
                                     .controlSize(.regular)
 
@@ -412,7 +417,7 @@ extension KindleWikiRootView {
                 VStack(alignment: .leading, spacing: 10) {
                     Text("Recent Lookups")
                         .font(.system(size: 16, weight: .bold, design: .serif))
-                        .foregroundColor(theme.foreground)
+                        .foregroundColor(theme.wiktionaryAccent)
 
                     HStack(alignment: .center, spacing: 16, homogeneous: true) {
                         ForEach(recentWords, id: \.id) { entry in
@@ -421,7 +426,7 @@ extension KindleWikiRootView {
                             }) {
                                 HStack(alignment: .center, spacing: 12) {
                                     Icon(.document, size: 20)
-                                        .foregroundColor(theme.mutedForeground)
+                                        .foregroundColor(theme.wiktionaryAccent)
                                     Text(compactPreview(entry.title, maxChars: 28))
                                         .font(.system(size: 15, weight: .bold, design: .serif))
                                         .foregroundColor(theme.foreground)
@@ -448,7 +453,7 @@ extension KindleWikiRootView {
                 VStack(alignment: .leading, spacing: 10) {
                     Text(category)
                         .font(.system(size: 16, weight: .bold, design: .serif))
-                        .foregroundColor(theme.foreground)
+                        .foregroundColor(theme.wiktionaryAccent)
 
                     ForEach(0..<wordRows.count, id: \.self) { rowIdx in
                         let pair = wordRows[rowIdx]
@@ -460,7 +465,7 @@ extension KindleWikiRootView {
                                 }) {
                                     HStack(alignment: .center, spacing: 12) {
                                         Icon(.document, size: 20)
-                                            .foregroundColor(theme.mutedForeground)
+                                            .foregroundColor(theme.wiktionaryAccent)
                                         Text(word)
                                             .font(.system(size: 15, weight: .bold, design: .serif))
                                             .foregroundColor(theme.foreground)
@@ -545,16 +550,16 @@ extension KindleWikiRootView {
                             VStack(alignment: .center, spacing: 0) {
                                 Spacer()
                                 Icon(.bookmark, size: 48)
-                                    .foregroundColor(theme.foreground)
+                                    .foregroundColor(theme.featuredAccent)
                                 Spacer()
                             }
                             .frame(width: 92, height: 92)
                             .background(theme.cardBackground, in: .rect(cornerRadius: 46))
-                            .overlay(theme.subtleBorder, in: .rect(cornerRadius: 46), lineWidth: 1)
+                            .overlay(theme.warmBorder, in: .rect(cornerRadius: 46), lineWidth: 1)
 
                             Text(savedMode == .bookmarks ? "No Saved Bookmarks Yet" : "No Recent History")
                                 .font(.system(size: 24, weight: .bold, design: .serif))
-                                .foregroundColor(theme.foreground)
+                                .foregroundColor(theme.accent)
                                 .multilineTextAlignment(.center)
 
                             Text(savedMode == .bookmarks
@@ -569,6 +574,7 @@ extension KindleWikiRootView {
                                 Button("Explore Wikipedia") {
                                     selectedTab = .wikipedia
                                 }
+                                .tint(theme.accent)
                                 .buttonStyle(.borderedProminent)
                                 .controlSize(.regular)
 
@@ -581,8 +587,8 @@ extension KindleWikiRootView {
                             .padding(.top, 6)
                         }
                         .padding(EdgeInsets(top: 40, leading: 44, bottom: 44, trailing: 44))
-                        .background(theme.panelBackground, in: .rect(cornerRadius: 24))
-                        .overlay(theme.subtleBorder, in: .rect(cornerRadius: 24), lineWidth: 1)
+                        .background(theme.warmPanel, in: .rect(cornerRadius: 24))
+                        .overlay(theme.warmBorder, in: .rect(cornerRadius: 24), lineWidth: 1)
                         .frame(width: 960)
 
                         Spacer()
@@ -599,10 +605,10 @@ extension KindleWikiRootView {
                                 VStack(alignment: .leading, spacing: 8) {
                                     HStack(alignment: .center, spacing: 10) {
                                         Icon(item.kind == .wikipedia ? .book : .document, size: 22)
-                                            .foregroundColor(theme.mutedForeground)
+                                            .foregroundColor(item.kind == .wikipedia ? theme.linkAccent : theme.wiktionaryAccent)
                                         Text(item.title)
                                             .font(.system(size: 19, weight: .bold, design: .serif))
-                                            .foregroundColor(theme.foreground)
+                                            .foregroundColor(item.kind == .wikipedia ? theme.accent : theme.wiktionaryAccent)
                                             .lineLimit(1)
                                         let metaParts: [String] = {
                                             var parts = [item.kind.rawValue]
@@ -643,6 +649,7 @@ extension KindleWikiRootView {
                                                     .font(.system(size: 14, weight: .bold))
                                             }
                                         }
+                                        .tint(theme.savedAccent)
                                         .buttonStyle(hasOffline ? .borderedProminent : .bordered)
                                         .controlSize(.regular)
                                     }
@@ -656,6 +663,7 @@ extension KindleWikiRootView {
                                                 .font(.system(size: 14, weight: .bold))
                                         }
                                     }
+                                    .tint(theme.featuredAccent)
                                     .buttonStyle(saved ? .borderedProminent : .bordered)
                                     .controlSize(.regular)
 

@@ -62,7 +62,7 @@ public struct TabView<SelectionValue: Equatable>: View, _PrimitiveView {
     public let selection: Binding<SelectionValue>
     public let tabs: [KindleTab<SelectionValue>]
     public let onTabChange: ((SelectionValue) -> Void)?
-    private var styleVariant: KindleTabViewStyle = .bottomBar
+    private var styleVariant: KindleTabViewStyle? = nil
 
     public init(
         selection: Binding<SelectionValue>,
@@ -84,6 +84,7 @@ public struct TabView<SelectionValue: Equatable>: View, _PrimitiveView {
     public func _makeNode() -> RenderNode {
         let theme = KindleTheme.current
         let current = selection.wrappedValue
+        let resolvedStyle = styleVariant ?? KindleStateRegistry.shared.currentEnvironment.tabViewStyleOverride ?? .bottomBar
         let lastTabBox = KindleStateRegistry.shared.obtainBox(
             siteKey: "tabview-last-selection",
             initialValue: { Optional<SelectionValue>.some(current) }
@@ -105,18 +106,6 @@ public struct TabView<SelectionValue: Equatable>: View, _PrimitiveView {
         let iconSpacing = tabs.count >= 5 ? 8 : 10
         let barSpacing = 4
 
-        let itemShapeForIndex: (Int) -> UnevenRoundedRectangle = { idx in
-            if tabs.count <= 1 {
-                return UnevenRoundedRectangle(topLeadingRadius: 999, bottomLeadingRadius: 999, bottomTrailingRadius: 999, topTrailingRadius: 999)
-            } else if idx == 0 {
-                return UnevenRoundedRectangle(topLeadingRadius: 999, bottomLeadingRadius: 999, bottomTrailingRadius: 0, topTrailingRadius: 0)
-            } else if idx == tabs.count - 1 {
-                return UnevenRoundedRectangle(topLeadingRadius: 0, bottomLeadingRadius: 0, bottomTrailingRadius: 999, topTrailingRadius: 999)
-            } else {
-                return UnevenRoundedRectangle(topLeadingRadius: 0, bottomLeadingRadius: 0, bottomTrailingRadius: 0, topTrailingRadius: 0)
-            }
-        }
-
         let selectTab: (SelectionValue) -> Void = { tag in
             guard selection.wrappedValue != tag else { return }
             if KindleKeyboardManager.shared.isVisible {
@@ -131,15 +120,15 @@ public struct TabView<SelectionValue: Equatable>: View, _PrimitiveView {
         }
 
         let tabBar: RenderNode
-        switch styleVariant {
+        switch resolvedStyle {
         case .bottomBar:
             tabBar = HStack(alignment: .center, spacing: barSpacing, homogeneous: true) {
                 ForEach(tabs.indices) { idx in
                     let tab = tabs[idx]
                     let isSelected = (tab.tag == current)
                     let labelTitle = tab.badge != nil ? "\(tab.title) (\(tab.badge!))" : tab.title
-                    let pillBg = isSelected ? theme.foreground : theme.cardBackground
-                    let itemShape = itemShapeForIndex(idx)
+                    let pillBg = isSelected ? theme.accent : theme.cardBackground
+                    let itemShape = UnevenRoundedRectangle.segmentedPill(index: idx, count: tabs.count)
                     if let icon = tab.icon {
                         Button(action: { selectTab(tab.tag) }) {
                             HStack(alignment: .center, spacing: iconSpacing) {
@@ -152,6 +141,7 @@ public struct TabView<SelectionValue: Equatable>: View, _PrimitiveView {
                         }
                         .padding(EdgeInsets(top: vPad, leading: hPad, bottom: vPad, trailing: hPad))
                         .background(pillBg)
+                        .tint(theme.accent)
                         .buttonStyle(isSelected ? .borderedProminent : .plain)
                         .clipShape(itemShape)
                         .expand(true, fill: true)
@@ -162,6 +152,7 @@ public struct TabView<SelectionValue: Equatable>: View, _PrimitiveView {
                         .font(.system(size: fontPt, weight: .bold))
                         .padding(EdgeInsets(top: vPad + 2, leading: hPad, bottom: vPad + 2, trailing: hPad))
                         .background(pillBg)
+                        .tint(theme.accent)
                         .buttonStyle(isSelected ? .borderedProminent : .plain)
                         .clipShape(itemShape)
                         .expand(true, fill: true)
@@ -178,7 +169,7 @@ public struct TabView<SelectionValue: Equatable>: View, _PrimitiveView {
                 ForEach(tabs.indices) { idx in
                     let tab = tabs[idx]
                     let isSelected = (tab.tag == current)
-                    let itemShape = itemShapeForIndex(idx)
+                    let itemShape = UnevenRoundedRectangle.segmentedPill(index: idx, count: tabs.count)
                     if let icon = tab.icon {
                         Button(action: { selectTab(tab.tag) }) {
                             HStack(alignment: .center, spacing: 8) {

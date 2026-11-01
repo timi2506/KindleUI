@@ -1,7 +1,7 @@
 import Foundation
 import CKindleGTK
 
-// MARK: - GeometryReader, ViewThatFits, ScrollViewReader & Menu
+// MARK: - GeometryReader, ViewThatFits & ScrollViewReader
 
 /// A 2D size value provided by `GeometryProxy`.
 public struct GeometrySize: Sendable, Equatable {
@@ -35,10 +35,12 @@ public struct GeometryReader<Content: View>: View, _PrimitiveView {
     }
 
     public func _makeNode() -> RenderNode {
+        var sw: Int32 = 1860
+        var sh: Int32 = 2480
+        kgtk_get_screen_size(&sw, &sh)
         let scale = max(0.28, kgtk_get_ui_scale())
-        let logicalWidth = 1860.0
-        let logicalHeight = 2480.0
-        _ = scale
+        let logicalWidth = (Double(sw) / scale).rounded()
+        let logicalHeight = (Double(sh) / scale).rounded()
         let proxy = GeometryProxy(
             size: GeometrySize(width: logicalWidth, height: logicalHeight),
             safeAreaInsets: EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0)
@@ -115,7 +117,6 @@ public struct TimelineView<Content: View>: View, _PrimitiveView {
 
     public let schedule: TimelineSchedule
     private let siteKey: String
-    private let dateBox: StateBox<Date>
     private let content: (TimelineViewContext) -> Content
 
     public init(
@@ -126,19 +127,17 @@ public struct TimelineView<Content: View>: View, _PrimitiveView {
         @ViewBuilder content: @escaping (TimelineViewContext) -> Content
     ) {
         self.schedule = schedule
-        let key = "timeline:\(fileID):\(line):\(column)"
-        self.siteKey = key
-        self.dateBox = KindleStateRegistry.shared.obtainBox(
-            siteKey: key,
-            initialValue: { Date() }
-        )
+        self.siteKey = "timeline:\(fileID):\(line):\(column)"
         self.content = content
     }
 
     public func _makeNode() -> RenderNode {
         let interval = schedule.intervalSeconds
         let paused = schedule.isPaused
-        let box = dateBox
+        let box = KindleStateRegistry.shared.obtainBox(
+            siteKey: siteKey,
+            initialValue: { Date() }
+        )
         if !paused {
             KindleStateRegistry.shared.registerAsyncTask(
                 id: siteKey,

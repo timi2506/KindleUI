@@ -17,7 +17,7 @@ public struct DatePicker: View, _PrimitiveView {
     public let title: String
     public let selection: Binding<Date>
     public let displayedComponents: DatePickerComponents
-    private let expandedBox: StateBox<Bool>
+    private let siteKey: String
 
     public init(
         _ title: String = "",
@@ -30,17 +30,17 @@ public struct DatePicker: View, _PrimitiveView {
         self.title = title
         self.selection = selection
         self.displayedComponents = displayedComponents
-        self.expandedBox = KindleStateRegistry.shared.obtainBox(
-            siteKey: "datepicker:\(fileID):\(line):\(column)",
-            initialValue: { false }
-        )
+        self.siteKey = "datepicker:\(fileID):\(line):\(column)"
     }
 
     public func _makeNode() -> RenderNode {
         let theme = KindleTheme.current
         let currentDate = selection.wrappedValue
         let binding = selection
-        let box = expandedBox
+        let box = KindleStateRegistry.shared.obtainBox(
+            siteKey: siteKey,
+            initialValue: { false }
+        )
         let isExpanded = box.value
         let cal = Calendar(identifier: .gregorian)
 
@@ -230,6 +230,9 @@ public struct MultiDatePicker: View, _PrimitiveView {
             }
 
             LazyVGrid(columns: cols, spacing: 6) {
+                ForEach(0..<firstWeekdayOffset, id: \.self) { _ in
+                    Spacer(minLength: 1)
+                }
                 ForEach(1...daysInMonth, id: \.self) { dayNum in
                     let isPicked = selection.wrappedValue.contains(dayNum)
                     Button("\(dayNum)") {

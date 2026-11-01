@@ -14,6 +14,7 @@ public final class KindleStateRegistry: @unchecked Sendable {
     /// incrementally so per-site key construction is O(1) instead of re-joining the whole stack each time.
     private var scopeKeys: [String] = ["root"]
     private var currentScopeKey: String { scopeKeys[scopeKeys.count - 1] }
+    internal var activeScopeKey: String { currentScopeKey }
     private var scopeSiteCounters: [String: Int] = [:]
     private var environmentStack: [EnvironmentValues] = [EnvironmentValues()]
 
@@ -38,6 +39,8 @@ public final class KindleStateRegistry: @unchecked Sendable {
     internal var scrollRequestHandler: ((AnyHashable) -> Void)?
     internal var defaultEditMode: EditMode = .inactive
     internal var defaultModelContainer: ModelContainer? = nil
+    internal var pagerPageOverride: (scopeKey: String, pageIndex: Int)? = nil
+    internal var lastRenderedPagerState: (scopeKey: String, currentIndex: Int, totalPages: Int)? = nil
 
     /// Active application identifier declared by `App.applicationID` or `WindowGroup(id:)`.
     public private(set) var applicationID: String = "org.kindlemodding.default"
@@ -141,10 +144,15 @@ public final class KindleStateRegistry: @unchecked Sendable {
         scopeSiteCounters.removeAll(keepingCapacity: true)
         environmentStack = [EnvironmentValues()]
         preferenceStack = [[:]]
-        currentPassIDs.removeAll(keepingCapacity: true)
         activeDismissActions.removeAll(keepingCapacity: true)
         activeModalOverlays.removeAll(keepingCapacity: true)
-        KindleKeyboardManager.shared.beginRenderPass()
+        if !suppressSideEffects {
+            currentPassIDs.removeAll(keepingCapacity: true)
+            if pagerPageOverride == nil {
+                lastRenderedPagerState = nil
+            }
+            KindleKeyboardManager.shared.beginRenderPass()
+        }
     }
 
     internal func emitPreference<K: PreferenceKey>(key: K.Type, value: K.Value) {
@@ -185,16 +193,15 @@ public final class KindleStateRegistry: @unchecked Sendable {
             }
         }
 
+        guard !suppressSideEffects else { return node }
         if let prev = preferenceStorage[scopeID] as? K.Value {
             if prev != resolved {
                 preferenceStorage[scopeID] = resolved
-                if !suppressSideEffects {
-                    perform(resolved)
-                }
+                perform(resolved)
             }
         } else {
             preferenceStorage[scopeID] = resolved
-            if resolved != K.defaultValue && !suppressSideEffects {
+            if resolved != K.defaultValue {
                 perform(resolved)
             }
         }
@@ -203,6 +210,7 @@ public final class KindleStateRegistry: @unchecked Sendable {
 
     public func endRenderPass() {
         isEvaluatingBody = false
+        guard !suppressSideEffects else { return }
         // Fire .onDisappear and cancel tasks for any tracked view ID that left the render tree
         let disappeared = appearedIDs.subtracting(currentPassIDs)
         for id in disappeared {
@@ -215,6 +223,49 @@ public final class KindleStateRegistry: @unchecked Sendable {
                 handler()
             }
         }
+    }
+
+    /// Evaluates a speculative render tree without mutating active lifecycle, keyboard, preference, or dismiss state.
+    internal func evaluateSpeculativeTree(
+        pagerOverride: (scopeKey: String, pageIndex: Int),
+        _ makeTree: () -> RenderNode
+    ) -> RenderNode {
+        let savedSuppress = suppressSideEffects
+        let savedOverride = pagerPageOverride
+        let savedDismiss = activeDismissActions
+        let savedModals = activeModalOverlays
+        let savedScrollHandler = scrollRequestHandler
+
+        suppressSideEffects = true
+        pagerPageOverride = pagerOverride
+        defer {
+            pagerPageOverride = savedOverride
+            suppressSideEffects = savedSuppress
+            activeDismissActions = savedDismiss
+            activeModalOverlays = savedModals
+            scrollRequestHandler = savedScrollHandler
+        }
+
+        beginRenderPass()
+        var tree = makeTree()
+        endRenderPass()
+
+        for modal in activeModalOverlays {
+            tree = RenderNode.zstack(
+                alignment: modal.alignment,
+                children: [tree, modal.node],
+                style: {
+                    var s = ViewStyle()
+                    s.expand = true
+                    s.fill = true
+                    s.isModalOverlay = true
+                    s.isFullScreenModal = modal.isFullScreen
+                    s.hasModalScrim = modal.hasScrim
+                    return s
+                }()
+            )
+        }
+        return tree
     }
 
     /// Evaluates a render tree pass and automatically re-evaluates if `.preferredColorScheme(_:)`
@@ -366,6 +417,7 @@ public final class KindleStateRegistry: @unchecked Sendable {
     }
 
     internal func checkOnChange<V: Equatable>(key: String, value: V, action: @escaping (V) -> Void) {
+        guard !suppressSideEffects else { return }
         let scopedKey = currentScopeKey + "|" + key
         if let prev = onChangeStorage[scopedKey] as? V {
             if prev != value {
@@ -429,7 +481,6 @@ internal final class _StateResolver<Value>: @unchecked Sendable {
     private let siteKey: String
     private let initialValue: () -> Value
     private var resolvedBox: StateBox<Value>?
-    private var resolvedPassID: UInt64 = 0
 
     init(siteKey: String, initialValue: @escaping () -> Value) {
         self.siteKey = siteKey
@@ -441,7 +492,6 @@ internal final class _StateResolver<Value>: @unchecked Sendable {
         let reg = KindleStateRegistry.shared
         guard reg.isEvaluatingBody else { return }
         resolvedBox = reg.obtainBox(siteKey: siteKey, initialValue: initialValue)
-        resolvedPassID = reg.renderPassID
     }
 
     var box: StateBox<Value> {
@@ -451,7 +501,6 @@ internal final class _StateResolver<Value>: @unchecked Sendable {
         let reg = KindleStateRegistry.shared
         let created = reg.obtainBox(siteKey: siteKey, initialValue: initialValue)
         resolvedBox = created
-        resolvedPassID = reg.renderPassID
         return created
     }
 }

@@ -9,11 +9,12 @@ extension ViewStyle {
     internal static let structuralFieldNames: Set<String> = [
         "font", "foregroundColor", "backgroundColor", "borderColor", "borderWidth", "cornerRadius",
         "unevenCorners", "isEllipse", "shadow", "contentPadding", "padding", "width", "height",
+        "minWidth", "maxWidth", "minHeight", "maxHeight",
         "expand", "fill", "expandHorizontally", "expandVertically", "fillHorizontally",
         "fillVertically", "homogeneous", "isDisabled", "isHidden", "isModalOverlay",
         "isFullScreenModal", "hasModalScrim", "opacity", "buttonStyle", "controlSize", "pickerStyle",
         "toggleStyle", "tabViewStyle", "tintColor", "alignment", "windowConfig", "colorScheme",
-        "refreshPolicy", "navigationTitle", "toolbarNodes", "pangoMarkup", "explicitID",
+        "refreshPolicy", "navigationTitle", "toolbarNodes", "pangoMarkup", "lineLimit", "explicitID",
         "onSubmitHandler", "onAppear", "onDisappear", "onTapGesture", "onLongPressGesture",
         "longPressDurationMs", "onSwipeLeft", "onSwipeRight", "onSwipeUp", "onSwipeDown",
         "swipeThresholdPx", "onDragChanged", "onDragEnded",
@@ -52,6 +53,10 @@ extension ViewStyle {
               padding == o.padding,
               width == o.width,
               height == o.height,
+              minWidth == o.minWidth,
+              maxWidth == o.maxWidth,
+              minHeight == o.minHeight,
+              maxHeight == o.maxHeight,
               expand == o.expand,
               fill == o.fill,
               expandHorizontally == o.expandHorizontally,
@@ -76,6 +81,7 @@ extension ViewStyle {
               colorScheme == o.colorScheme,
               refreshPolicy == o.refreshPolicy,
               navigationTitle == o.navigationTitle,
+              lineLimit == o.lineLimit,
               explicitID == o.explicitID,
               longPressDurationMs == o.longPressDurationMs,
               swipeThresholdPx == o.swipeThresholdPx,
@@ -150,6 +156,11 @@ extension RenderNode {
 
         if let s1 = styleSnapshot, let s2 = other.styleSnapshot {
             guard s1.isStructurallyEqual(to: s2) else { return false }
+            if case let (.zstack(_, c1, _), .zstack(_, c2, _)) = (self, other),
+               s1.isFullScreenModal, s2.isFullScreenModal {
+                guard c1.count == c2.count, let top1 = c1.last, let top2 = c2.last else { return false }
+                return top1.isStructurallyEqual(to: top2)
+            }
         }
         return RenderNode.nodesAreStructurallyEqual(renderChildren, other.renderChildren)
     }

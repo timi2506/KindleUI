@@ -248,7 +248,7 @@ struct KindleWikiRootView: View {
         .fullScreenCover(isPresented: $isReaderPresented) {
             fullScreenReaderView(theme: theme)
         }
-        .fullScreenCover(isPresented: $showImageDetail) {
+        .sheet(isPresented: $showImageDetail, title: enlargedImageSheetTitle, detent: .fit) {
             enlargedImageView(theme: theme)
         }
         .fullScreenCover(isPresented: $showChaptersModal) {
@@ -341,10 +341,10 @@ struct KindleWikiRootView: View {
         HStack(alignment: .center, spacing: 18) {
             HStack(alignment: .center, spacing: 14) {
                 Icon(.book, size: 32)
-                    .foregroundColor(theme.foreground)
+                    .foregroundColor(theme.accent)
                 Text("KindleWiki")
                     .font(.system(size: 24, weight: .bold, design: .serif))
-                    .foregroundColor(theme.foreground)
+                    .foregroundColor(theme.accent)
                 Text("·  Encyclopedia & Dictionary")
                     .font(.system(size: 14, weight: .regular, design: .serif))
                     .foregroundColor(theme.mutedForeground)
@@ -461,13 +461,14 @@ struct KindleWikiRootView: View {
                             .font(.system(size: 14, weight: .bold))
                     }
                 }
+                .tint(isWiktionary ? theme.wiktionaryAccent : theme.accent)
                 .buttonStyle(.borderedProminent)
                 .controlSize(.regular)
             }
         }
         .padding(12)
-        .background(theme.panelBackground, in: .rect(cornerRadius: 28))
-        .overlay(theme.subtleBorder, in: .rect(cornerRadius: 28), lineWidth: 1)
+        .background(isSaved ? theme.savedPanel : (isWiktionary ? theme.wiktionaryPanel : theme.accentPanel), in: .rect(cornerRadius: 28))
+        .overlay(isSaved ? theme.subtleBorder : theme.accentBorder, in: .rect(cornerRadius: 28), lineWidth: 1)
     }
 
     internal func submitHeaderSearch() {

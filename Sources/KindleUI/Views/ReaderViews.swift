@@ -30,7 +30,17 @@ public struct KindlePager<PageData, PageContent: View>: View, _PrimitiveView {
         }
 
         let total = pages.count
-        let idx = max(0, min(total - 1, currentPage.wrappedValue))
+        let registry = KindleStateRegistry.shared
+        let scopeKey = registry.activeScopeKey
+        let idx: Int
+        if let override = registry.pagerPageOverride, override.scopeKey == scopeKey {
+            idx = max(0, min(total - 1, override.pageIndex))
+        } else {
+            idx = max(0, min(total - 1, currentPage.wrappedValue))
+            if !registry.suppressSideEffects, total > 1 {
+                registry.lastRenderedPagerState = (scopeKey: scopeKey, currentIndex: idx, totalPages: total)
+            }
+        }
         let binding = currentPage
         let flashEvery = fullRefreshEvery
 

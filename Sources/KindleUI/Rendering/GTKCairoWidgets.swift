@@ -491,21 +491,11 @@ internal func gtkCairoDestroyTrampoline(userData: UnsafeMutableRawPointer?) {
 }
 
 extension GTK2Renderer {
-    private static let iconOrder: [KindleIconName] = [
-        .wifi, .battery, .sun, .moon, .refresh,
-        .chevronLeft, .chevronRight, .chevronDown, .chevronUp,
-        .search, .bookmark, .check, .warning, .info,
-        .book, .globe, .cloud, .gear, .sliders,
-        .plus, .minus, .close, .star, .bolt,
-        .pencil, .share, .folder, .document, .calendar,
-        .bookmarkFill
-    ]
-
     internal func attachCairoTarget(_ target: GTKCairoTarget, to widget: KWidgetRef) {
         let ptr = Unmanaged.passRetained(target).toOpaque()
         switch target.kind {
         case .icon(let icon, let fgGray, let bgGray, let hasBg):
-            let iconIdx = UInt64(Self.iconOrder.firstIndex(of: icon) ?? 0) + 1
+            let iconIdx = UInt64(max(0, icon.rawValue)) + 1
             let key: UInt64 = (1 << 24)
                 | (iconIdx << 17)
                 | (UInt64(hasBg ? 1 : 0) << 16)

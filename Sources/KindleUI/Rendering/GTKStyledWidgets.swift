@@ -12,99 +12,18 @@ extension GTK2Renderer {
         context: RenderContext
     ) -> KWidgetRef? {
         let theme = KindleTheme.current
-        let role = style.buttonStyle ?? context.buttonStyle ?? .automatic
-        let controlSize = style.controlSize ?? context.controlSize ?? .regular
-        let isDisabled = style.isDisabled || context.isDisabled
-
-        // Default role palette
-        var defaultBg: EInkColor?
-        var defaultFg: EInkColor
-        var defaultBorderColor: EInkColor
-        var defaultBorderWidth: Int
-        var defaultRadius: Int
-        var defaultShadow: KindleShadow?
-
-        switch role {
-        case .automatic, .bordered:
-            defaultBg = theme.cardBackground
-            defaultFg = isDisabled ? theme.mutedForeground : theme.foreground
-            defaultBorderColor = isDisabled ? theme.subtleBorder : theme.border
-            defaultBorderWidth = 1
-            defaultRadius = 16
-            defaultShadow = nil
-
-        case .unbordered:
-            defaultBg = theme.panelBackground
-            defaultFg = isDisabled ? theme.mutedForeground : theme.foreground
-            defaultBorderColor = theme.panelBackground
-            defaultBorderWidth = 0
-            defaultRadius = 16
-            defaultShadow = nil
-
-        case .borderedProminent:
-            defaultBg = isDisabled ? theme.panelBackground : (style.tintColor ?? theme.foreground)
-            defaultFg = isDisabled ? theme.mutedForeground : theme.background
-            defaultBorderColor = isDisabled ? theme.subtleBorder : (style.tintColor ?? theme.border)
-            defaultBorderWidth = 1
-            defaultRadius = 16
-            defaultShadow = nil
-
-        case .capsule:
-            defaultBg = theme.panelBackground
-            defaultFg = isDisabled ? theme.mutedForeground : theme.foreground
-            defaultBorderColor = theme.subtleBorder
-            defaultBorderWidth = 1
-            defaultRadius = 999
-            defaultShadow = nil
-
-        case .card:
-            defaultBg = theme.cardBackground
-            defaultFg = isDisabled ? theme.mutedForeground : theme.foreground
-            defaultBorderColor = theme.subtleBorder
-            defaultBorderWidth = 1
-            defaultRadius = 18
-            defaultShadow = nil
-
-        case .plain, .borderless:
-            defaultBg = nil
-            defaultFg = isDisabled ? theme.mutedForeground : (style.tintColor ?? theme.foreground)
-            defaultBorderColor = theme.border
-            defaultBorderWidth = 0
-            defaultRadius = 14
-            defaultShadow = nil
-        }
-
-        let rawBg = style.backgroundColor ?? defaultBg
-        let effectiveBg = rawBg.map { context.blend($0, localOpacity: style.opacity) }
-        let effectiveFg = context.blend(
-            style.foregroundColor ?? defaultFg,
-            localOpacity: style.opacity,
-            against: effectiveBg ?? context.bg
-        )
-        let effectiveBorderColor = context.blend(style.borderColor ?? defaultBorderColor, localOpacity: style.opacity)
-        let effectiveBorderWidth = style.borderWidth > 0 ? style.borderWidth : defaultBorderWidth
-        let effectiveRadius = style.cornerRadius ?? defaultRadius
-        let effectiveShadow = style.shadow ?? defaultShadow
-        let effectiveFont = style.font ?? context.font ?? KindleFont.system(size: controlSize.defaultFontSize, weight: .bold)
-
-        // Determine inner button padding vs outer margin
-        let innerPad: EdgeInsets
-        let outerPad: EdgeInsets?
-        if let contentPad = style.contentPadding {
-            innerPad = contentPad
-            outerPad = style.padding
-        } else if let pad = style.padding {
-            innerPad = pad
-            outerPad = nil
-        } else {
-            innerPad = controlSize.defaultPadding
-            outerPad = nil
-        }
-
-        var childCtx = context.merging(style)
-        childCtx.font = effectiveFont
-        childCtx.fg = effectiveFg
-        if let bg = effectiveBg { childCtx.bg = bg }
+        let visuals = context.resolveButtonVisuals(style: style, theme: theme)
+        let isDisabled = visuals.isDisabled
+        let effectiveBg = visuals.effectiveBg
+        let effectiveFg = visuals.effectiveFg
+        let effectiveBorderColor = visuals.effectiveBorderColor
+        let effectiveBorderWidth = visuals.effectiveBorderWidth
+        let effectiveRadius = visuals.effectiveRadius
+        let effectiveShadow = visuals.effectiveShadow
+        let effectiveFont = visuals.effectiveFont
+        let innerPad = visuals.innerPad
+        let outerPad = visuals.outerPad
+        let childCtx = visuals.childCtx
 
         let xAlign = style.alignment?.horizontal.gtkAlign ?? 0.5
         let yAlign = style.alignment?.vertical.gtkAlign ?? 0.5
@@ -117,6 +36,7 @@ extension GTK2Renderer {
                 kgtk_label_set_line_wrap(lbl, false)
                 kgtk_misc_set_alignment(lbl, xAlign, yAlign)
                 kgtk_label_set_justify(lbl, xAlign < 0.25 ? 0 : (xAlign > 0.75 ? 1 : 2))
+                kgtk_label_set_bg_gray(lbl, (effectiveBg ?? context.bg).grayLevel)
                 effectiveFont.pangoDescription.withCString { desc in
                     kgtk_widget_set_font_and_fg(lbl, desc, true, effectiveFg.grayLevel)
                 }
@@ -173,13 +93,7 @@ extension GTK2Renderer {
             )
         }
 
-        if let width = style.width, let height = style.height {
-            kgtk_widget_set_size_request(btn, Int32(width), Int32(height))
-        } else if let width = style.width {
-            kgtk_widget_set_size_request(btn, Int32(width), -1)
-        } else if let height = style.height {
-            kgtk_widget_set_size_request(btn, -1, Int32(height))
-        }
+        applySizeConstraints(style, to: btn)
 
         if let outerPad = outerPad, let align = kgtk_alignment_new(0.0, 0.0, 1.0, 1.0) {
             kgtk_alignment_set_padding(
@@ -230,6 +144,7 @@ extension GTK2Renderer {
         if let lbl = label.withCString({ kgtk_label_new($0) }) {
             kgtk_label_set_line_wrap(lbl, false)
             kgtk_misc_set_alignment(lbl, 0.0, 0.5)
+            kgtk_label_set_bg_gray(lbl, effectiveBg.grayLevel)
             effectiveFont.pangoDescription.withCString { desc in
                 kgtk_widget_set_font_and_fg(lbl, desc, true, effectiveFg.grayLevel)
             }
@@ -281,6 +196,8 @@ extension GTK2Renderer {
             ptr
         ) else { return hbox }
 
+        applySizeConstraints(style, to: rowBtn)
+
         if let outerPad = style.padding, let align = kgtk_alignment_new(0.0, 0.0, 1.0, 1.0) {
             kgtk_alignment_set_padding(
                 align,
@@ -298,6 +215,25 @@ extension GTK2Renderer {
 
     // MARK: - General ViewStyle Application
 
+    internal func applySizeConstraints(_ style: ViewStyle, to widget: KWidgetRef) {
+        let minW = style.width ?? style.minWidth ?? -1
+        let maxW = style.width ?? style.maxWidth ?? -1
+        let minH = style.height ?? style.minHeight ?? -1
+        let maxH = style.height ?? style.maxHeight ?? -1
+        guard minW > 0 || maxW > 0 || minH > 0 || maxH > 0 else { return }
+        let xAlign = style.alignment?.horizontal.gtkAlign ?? 0.5
+        let yAlign = style.alignment?.vertical.gtkAlign ?? 0.5
+        kgtk_widget_set_size_constraints(
+            widget,
+            Int32(minW),
+            Int32(maxW),
+            Int32(minH),
+            Int32(maxH),
+            xAlign,
+            yAlign
+        )
+    }
+
     internal func applyStyle(
         _ style: ViewStyle,
         to widget: KWidgetRef,
@@ -311,10 +247,11 @@ extension GTK2Renderer {
             let font = style.font ?? context.font
             let alpha = context.effectiveOpacity(style.opacity)
             let hasFg = (style.foregroundColor != nil || context.fg != nil || alpha < 0.999)
+            let targetBg = style.backgroundColor.map { context.blend($0, localOpacity: style.opacity) } ?? context.bg
+            kgtk_label_set_bg_gray(current, targetBg.grayLevel)
             let fgGray: UInt8
             if hasFg {
                 let baseFg = style.foregroundColor ?? context.fg ?? theme.foreground
-                let targetBg = style.backgroundColor.map { context.blend($0, localOpacity: style.opacity) } ?? context.bg
                 let blended = context.blend(baseFg, localOpacity: style.opacity, against: targetBg)
                 fgGray = blended.grayLevel
             } else {
@@ -329,7 +266,7 @@ extension GTK2Renderer {
             }
         }
 
-        if style.hasGestures {
+        if style.hasGestures && !context.isBehindModal && !context.isDisabled {
             let target = GTKSignalTarget(makeGestureHandler(for: style))
             registerTarget(target)
             let ptr = Unmanaged.passUnretained(target).toOpaque()
@@ -398,13 +335,7 @@ extension GTK2Renderer {
             }
         }
 
-        if let width = style.width, let height = style.height {
-            kgtk_widget_set_size_request(current, Int32(width), Int32(height))
-        } else if let width = style.width {
-            kgtk_widget_set_size_request(current, Int32(width), -1)
-        } else if let height = style.height {
-            kgtk_widget_set_size_request(current, -1, Int32(height))
-        }
+        applySizeConstraints(style, to: current)
 
         if let padding = style.padding {
             if let align = kgtk_alignment_new(0.0, 0.0, 1.0, 1.0) {
@@ -424,53 +355,17 @@ extension GTK2Renderer {
     }
 
     internal func nodeStyle(_ node: RenderNode) -> ViewStyle? {
-        switch node {
-        case .vstack(_, _, _, let s),
-             .hstack(_, _, _, let s),
-             .zstack(_, _, let s),
-             .scrollView(_, _, let s),
-             .card(_, _, let s),
-             .text(_, _, _, let s),
-             .button(_, _, _, let s),
-             .toggle(_, _, _, let s),
-             .textField(_, _, _, let s),
-             .textEditor(_, _, _, let s),
-             .slider(_, _, _, _, let s),
-             .progressBar(_, _, let s),
-             .divider(_, let s),
-             .spacer(_, let s),
-             .image(_, _, let s),
-             .icon(_, _, let s),
-             .canvas(_, _, _, _, let s),
-             .webView(_, _, _, _, _, _, _, let s):
-            return s
-        case .empty, .group:
-            return nil
-        }
+        node.styleSnapshot
     }
 
     internal func nodeWantsFullWidth(_ node: RenderNode) -> Bool {
-        if case .spacer = node { return true }
-        if let s = nodeStyle(node), (s.expandHorizontally == true || s.fillHorizontally == true || s.expand) {
-            return true
-        }
-        switch node {
-        case .vstack(_, _, let children, _),
-             .hstack(_, _, let children, _),
-             .zstack(_, let children, _),
-             .group(let children):
-            return children.contains { nodeWantsFullWidth($0) }
-        case .card(_, let child, _),
-             .scrollView(_, let child, _):
-            return nodeWantsFullWidth(child)
-        default:
-            return false
-        }
+        node.wantsFullWidth
     }
 
     internal func alignHorizontallyIfNeeded(widget: KWidgetRef, child: RenderNode, alignment: HorizontalAlignment) -> KWidgetRef {
         if case .text(_, let wrap, let textAlign, let s) = child, s.backgroundColor == nil, s.borderWidth == 0 {
-            if alignment != .leading && textAlign == .leading && !wrap && s.fillHorizontally != true && s.expandHorizontally != true && s.width == nil {
+            let hasExplicitWidthCap = (s.width != nil || s.maxWidth != nil) && s.expandHorizontally != true
+            if (alignment != .leading && textAlign == .leading && !wrap && s.fillHorizontally != true && s.expandHorizontally != true && s.width == nil && s.maxWidth == nil) || hasExplicitWidthCap {
                 let hAlign = (s.alignment?.horizontal ?? alignment).gtkAlign
                 if let align = kgtk_alignment_new(hAlign, 0.0, 0.0, 1.0) {
                     kgtk_container_add(align, widget)
@@ -482,9 +377,9 @@ extension GTK2Renderer {
             }
         }
         if case .hstack(_, _, let children, let s) = child {
-            let shrinksInCenteredVStack = alignment == .center && s.backgroundColor == nil && s.borderWidth == 0 && !children.contains(where: { nodeWantsFullWidth($0) })
+            let shrinksInCenteredVStack = alignment == .center && s.backgroundColor == nil && s.borderWidth == 0 && !children.contains(where: { $0.wantsFullWidth })
             let fillsH = s.fillHorizontally ?? s.expandHorizontally ?? (shrinksInCenteredVStack ? false : s.fill)
-            if (s.width != nil && s.expandHorizontally != true) || !fillsH {
+            if ((s.width != nil || s.maxWidth != nil) && s.expandHorizontally != true) || !fillsH {
                 let hAlign = (s.alignment?.horizontal ?? alignment).gtkAlign
                 if let align = kgtk_alignment_new(hAlign, 0.0, 0.0, 1.0) {
                     kgtk_container_add(align, widget)
@@ -493,9 +388,9 @@ extension GTK2Renderer {
             }
             return widget
         }
-        if let s = nodeStyle(child) {
+        if let s = child.styleSnapshot {
             let fillsH = s.fillHorizontally ?? s.expandHorizontally ?? s.fill
-            if (s.width != nil && s.expandHorizontally != true) || !fillsH {
+            if ((s.width != nil || s.maxWidth != nil) && s.expandHorizontally != true) || !fillsH {
                 let hAlign = (s.alignment?.horizontal ?? alignment).gtkAlign
                 if let align = kgtk_alignment_new(hAlign, 0.0, 0.0, 1.0) {
                     kgtk_container_add(align, widget)
@@ -507,30 +402,14 @@ extension GTK2Renderer {
     }
 
     internal func nodeWantsFullHeight(_ node: RenderNode) -> Bool {
-        if case .spacer = node { return true }
-        if case .divider(let vertical, _) = node, vertical { return true }
-        if case .scrollView = node { return true }
-        if let s = nodeStyle(node), (s.expandVertically == true || s.fillVertically == true) {
-            return true
-        }
-        switch node {
-        case .vstack(_, _, let children, _):
-            return children.contains { nodeWantsFullHeight($0) }
-        case .zstack(_, let children, _),
-             .group(let children):
-            return children.contains { nodeWantsFullHeight($0) }
-        case .card(_, let child, _):
-            return nodeWantsFullHeight(child)
-        default:
-            return false
-        }
+        node.wantsFullHeight
     }
 
     internal func alignVerticallyIfNeeded(widget: KWidgetRef, child: RenderNode, alignment: VerticalAlignment) -> KWidgetRef {
-        if nodeWantsFullHeight(child) {
+        if child.wantsFullHeight {
             return widget
         }
-        let s = nodeStyle(child)
+        let s = child.styleSnapshot
         let vAlign = (s?.alignment?.vertical ?? alignment).gtkAlign
         if let align = kgtk_alignment_new(0.0, vAlign, 1.0, 0.0) {
             kgtk_container_add(align, widget)
@@ -540,56 +419,14 @@ extension GTK2Renderer {
     }
 
     internal func verticalExpansionFlags(for node: RenderNode) -> (expand: Bool, fill: Bool) {
-        if case .spacer = node { return (true, true) }
-        if let s = nodeStyle(node) {
-            if let expV = s.expandVertically {
-                return (expV, s.fillVertically ?? s.fill)
-            }
-            if s.expandHorizontally == true {
-                return (false, false)
-            }
-        }
-        return expansionFlags(for: node)
+        node.verticalExpansionFlags
     }
 
     internal func horizontalExpansionFlags(for node: RenderNode) -> (expand: Bool, fill: Bool) {
-        if case .spacer = node { return (true, true) }
-        if let s = nodeStyle(node) {
-            if let expH = s.expandHorizontally {
-                return (expH, s.fillHorizontally ?? s.fill)
-            }
-            if s.expandVertically == true {
-                return (false, false)
-            }
-        }
-        return expansionFlags(for: node)
+        node.horizontalExpansionFlags
     }
 
     internal func expansionFlags(for node: RenderNode) -> (expand: Bool, fill: Bool) {
-        switch node {
-        case .spacer:
-            return (true, true)
-        case .scrollView(_, _, let style),
-             .canvas(_, _, _, _, let style),
-             .webView(_, _, _, _, _, _, _, let style):
-            return (style.expand, style.fill)
-        case .vstack(_, _, _, let style),
-             .hstack(_, _, _, let style),
-             .zstack(_, _, let style),
-             .card(_, _, let style),
-             .text(_, _, _, let style),
-             .button(_, _, _, let style),
-             .toggle(_, _, _, let style),
-             .textField(_, _, _, let style),
-             .textEditor(_, _, _, let style),
-             .slider(_, _, _, _, let style),
-             .progressBar(_, _, let style),
-             .divider(_, let style),
-             .image(_, _, let style),
-             .icon(_, _, let style):
-            return (style.expand, style.fill)
-        case .empty, .group:
-            return (false, true)
-        }
+        node.expansionFlags
     }
 }

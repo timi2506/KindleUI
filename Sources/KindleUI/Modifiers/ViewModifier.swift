@@ -3,15 +3,33 @@ import Foundation
 public struct ModifiedContent<Content: View>: View, _PrimitiveView {
     public typealias Body = Never
     private let upstream: Content
+    private let onMakeNode: (() -> Void)?
+    private let environmentTransform: ((inout EnvironmentValues) -> Void)?
     private let modifier: (inout ViewStyle) -> Void
 
-    public init(content: Content, modifier: @escaping (inout ViewStyle) -> Void) {
+    public init(
+        content: Content,
+        onMakeNode: (() -> Void)? = nil,
+        environmentTransform: ((inout EnvironmentValues) -> Void)? = nil,
+        modifier: @escaping (inout ViewStyle) -> Void
+    ) {
         self.upstream = content
+        self.onMakeNode = onMakeNode
+        self.environmentTransform = environmentTransform
         self.modifier = modifier
     }
 
     public func _makeNode() -> RenderNode {
-        upstream.buildRenderTree().modifyingStyle(modifier)
+        if let environmentTransform = environmentTransform {
+            KindleStateRegistry.shared.pushEnvironment(environmentTransform)
+        }
+        defer {
+            if environmentTransform != nil {
+                KindleStateRegistry.shared.popEnvironment()
+            }
+        }
+        onMakeNode?()
+        return upstream.buildRenderTree().modifyingStyle(modifier)
     }
 }
 
@@ -192,7 +210,10 @@ extension View {
 
     /// Sets the style for pickers within this view.
     public func pickerStyle(_ pickerStyle: KindlePickerStyle) -> ModifiedContent<Self> {
-        ModifiedContent(content: self) { style in
+        ModifiedContent(
+            content: self,
+            environmentTransform: { $0.pickerStyleOverride = pickerStyle }
+        ) { style in
             style.pickerStyle = pickerStyle
         }
     }
@@ -206,7 +227,10 @@ extension View {
 
     /// Sets the style for tab views within this view.
     public func tabViewStyle(_ tabViewStyle: KindleTabViewStyle) -> ModifiedContent<Self> {
-        ModifiedContent(content: self) { style in
+        ModifiedContent(
+            content: self,
+            environmentTransform: { $0.tabViewStyleOverride = tabViewStyle }
+        ) { style in
             style.tabViewStyle = tabViewStyle
         }
     }
@@ -222,6 +246,13 @@ extension View {
     public func homogeneous(_ enabled: Bool = true) -> ModifiedContent<Self> {
         ModifiedContent(content: self) { style in
             style.homogeneous = enabled
+        }
+    }
+
+    /// Limits the maximum number of lines that text within this view may occupy.
+    public func lineLimit(_ limit: Int?) -> ModifiedContent<Self> {
+        ModifiedContent(content: self) { style in
+            style.lineLimit = limit
         }
     }
 
@@ -280,14 +311,18 @@ extension View {
         id: String = #fileID + ":\(#line)",
         perform action: @escaping () -> Void
     ) -> ModifiedContent<Self> {
-        KindleStateRegistry.shared.registerLifecycle(
-            id: id,
-            onAppear: action,
-            onDisappear: nil,
-            taskID: nil,
-            taskAction: nil
-        )
-        return ModifiedContent(content: self) { style in
+        ModifiedContent(
+            content: self,
+            onMakeNode: {
+                KindleStateRegistry.shared.registerLifecycle(
+                    id: id,
+                    onAppear: action,
+                    onDisappear: nil,
+                    taskID: nil,
+                    taskAction: nil
+                )
+            }
+        ) { style in
             style.onAppear = action
         }
     }
@@ -297,14 +332,18 @@ extension View {
         id: String = #fileID + ":\(#line)",
         perform action: @escaping () -> Void
     ) -> ModifiedContent<Self> {
-        KindleStateRegistry.shared.registerLifecycle(
-            id: id,
-            onAppear: nil,
-            onDisappear: action,
-            taskID: nil,
-            taskAction: nil
-        )
-        return ModifiedContent(content: self) { style in
+        ModifiedContent(
+            content: self,
+            onMakeNode: {
+                KindleStateRegistry.shared.registerLifecycle(
+                    id: id,
+                    onAppear: nil,
+                    onDisappear: action,
+                    taskID: nil,
+                    taskAction: nil
+                )
+            }
+        ) { style in
             style.onDisappear = action
         }
     }
@@ -315,14 +354,18 @@ extension View {
         key: String = #fileID + ":\(#line)",
         _ action: @escaping () -> Void
     ) -> ModifiedContent<Self> {
-        KindleStateRegistry.shared.registerLifecycle(
-            id: "task:\(key)",
-            onAppear: nil,
-            onDisappear: nil,
-            taskID: AnyHashable(id),
-            taskAction: action
-        )
-        return ModifiedContent(content: self) { _ in }
+        ModifiedContent(
+            content: self,
+            onMakeNode: {
+                KindleStateRegistry.shared.registerLifecycle(
+                    id: "task:\(key)",
+                    onAppear: nil,
+                    onDisappear: nil,
+                    taskID: AnyHashable(id),
+                    taskAction: action
+                )
+            }
+        ) { _ in }
     }
 
     /// Runs a background/async action once when this view appears.
@@ -339,8 +382,12 @@ extension View {
         key: String = #fileID + ":\(#line)",
         perform action: @escaping (V) -> Void
     ) -> ModifiedContent<Self> {
-        KindleStateRegistry.shared.checkOnChange(key: key, value: value, action: action)
-        return ModifiedContent(content: self) { _ in }
+        ModifiedContent(
+            content: self,
+            onMakeNode: {
+                KindleStateRegistry.shared.checkOnChange(key: key, value: value, action: action)
+            }
+        ) { _ in }
     }
 
     /// Attaches a tap gesture handler to any view.
@@ -392,12 +439,16 @@ extension View {
         key: String = #fileID + ":\(#line)",
         _ action: @escaping @Sendable () async -> Void
     ) -> ModifiedContent<Self> {
-        KindleStateRegistry.shared.registerAsyncTask(
-            id: "asynctask:\(key)",
-            token: AnyHashable(id),
-            action: action
-        )
-        return ModifiedContent(content: self) { _ in }
+        ModifiedContent(
+            content: self,
+            onMakeNode: {
+                KindleStateRegistry.shared.registerAsyncTask(
+                    id: "asynctask:\(key)",
+                    token: AnyHashable(id),
+                    action: action
+                )
+            }
+        ) { _ in }
     }
 
     /// Runs an asynchronous, automatically cancelled task once when this view appears.
@@ -440,5 +491,3 @@ extension View {
         modifier.body(content: _ViewModifierContent { self.buildRenderTree() })
     }
 }
-
-/// Vertical edge for `.safeAreaInset(edge:content:)`.

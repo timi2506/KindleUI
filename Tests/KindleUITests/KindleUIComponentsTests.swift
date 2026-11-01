@@ -484,4 +484,83 @@ final class KindleUIComponentsTests: XCTestCase {
         }
         XCTAssertTrue(KindlePreviewRegistry.shared.registeredItems.contains { $0.id == "unit-test-card" })
     }
+
+    private final class LegacyViewModel: KindleUI.ObservableObject {
+        @KindleUI.Published var title: String = "Initial"
+    }
+
+    func testPublishedBindingLifecycleScopingRectUnionAndInheritedStyles() {
+        KindleStateRegistry.shared.resetAllState()
+
+        // 1. @Published projectedValue ($property) mutates the enclosing ObservableObject
+        let legacyVM = LegacyViewModel()
+        let titleBinding = legacyVM.$title
+        titleBinding.wrappedValue = "UpdatedViaProjectedBinding"
+        XCTAssertEqual(legacyVM.title, "UpdatedViaProjectedBinding")
+
+        // 2. KindleRect.union ignores empty rects instead of expanding dirty regions to (0, 0)
+        let validStroke = KindleRect(x: 500, y: 500, w: 8, h: 8)
+        let clippedEmpty = KindleRect(x: 0, y: 0, w: 0, h: 0)
+        XCTAssertEqual(validStroke.union(clippedEmpty), validStroke)
+        XCTAssertEqual(clippedEmpty.union(validStroke), validStroke)
+
+        // 3. .onAppear registrations are scoped under outer .id(...) modifiers during buildRenderTree()
+        var appearedIDs: [String] = []
+        var rowIdentity = "row-A"
+        let makeScopedTree: () -> RenderNode = {
+            Text("ScopedRow")
+                .onAppear {
+                    appearedIDs.append(rowIdentity)
+                }
+                .id(rowIdentity)
+                .buildRenderTree()
+        }
+        _ = KindleStateRegistry.shared.evaluateTree(makeScopedTree)
+        XCTAssertEqual(appearedIDs, ["row-A"])
+
+        rowIdentity = "row-B"
+        _ = KindleStateRegistry.shared.evaluateTree(makeScopedTree)
+        XCTAssertEqual(appearedIDs, ["row-A", "row-B"])
+
+        // 4. Ancestor .pickerStyle(.pills) and .tabViewStyle(.segmented) propagate to Picker and TabView
+        var selectedTab: SampleTab = .home
+        let styledContainer = VStack {
+            Picker(selection: Binding(get: { selectedTab }, set: { selectedTab = $0 }))
+                .padding(4)
+        }
+        .pickerStyle(.pills)
+        .buildRenderTree()
+
+        if case .vstack(_, _, let children, _) = styledContainer,
+           case .hstack(_, let spacing, _, _)? = children.first {
+            XCTAssertEqual(spacing, 16) // .pills uses spacing 16 (vs 4 for .segmented)
+        } else {
+            XCTFail("Expected Picker inside VStack")
+        }
+
+        // 5. MultiDatePicker inserts leading spacers for firstWeekdayOffset
+        var pickedDays: Set<Int> = [1]
+        let multiNode = MultiDatePicker(
+            "Schedule",
+            selection: Binding(get: { pickedDays }, set: { pickedDays = $0 }),
+            daysInMonth: 28,
+            firstWeekdayOffset: 3
+        ).buildRenderTree()
+        if case .vstack(_, _, let sections, _) = multiNode,
+           sections.count >= 3,
+           case .vstack(_, _, let gridRows, _) = sections[2],
+           case .hstack(_, _, let firstRowCells, _)? = gridRows.first {
+            // First 3 cells in row 0 should be spacers for firstWeekdayOffset == 3
+            if case .spacer = firstRowCells[0],
+               case .spacer = firstRowCells[1],
+               case .spacer = firstRowCells[2],
+               case .button = firstRowCells[3] {
+                // Passed
+            } else {
+                XCTFail("Expected 3 leading spacers followed by day 1 button in MultiDatePicker")
+            }
+        } else {
+            XCTFail("Unexpected MultiDatePicker structure")
+        }
+    }
 }

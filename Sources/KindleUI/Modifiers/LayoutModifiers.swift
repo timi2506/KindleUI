@@ -17,6 +17,12 @@ extension View {
         alignment: Alignment? = nil
     ) -> ModifiedContent<Self> {
         ModifiedContent(content: self) { style in
+            if let minWidth = minWidth {
+                style.minWidth = Int(minWidth)
+            }
+            if let idealWidth = idealWidth, style.width == nil {
+                style.width = Int(idealWidth)
+            }
             if let maxWidth = maxWidth {
                 if maxWidth.isInfinite {
                     style.expandHorizontally = true
@@ -24,14 +30,16 @@ extension View {
                     style.expand = true
                     style.fill = true
                 } else {
-                    style.width = Int(maxWidth)
+                    style.maxWidth = Int(maxWidth)
                 }
-            } else if let idealWidth = idealWidth {
-                style.width = Int(idealWidth)
-            } else if let minWidth = minWidth {
-                style.width = Int(minWidth)
             }
 
+            if let minHeight = minHeight {
+                style.minHeight = Int(minHeight)
+            }
+            if let idealHeight = idealHeight, style.height == nil {
+                style.height = Int(idealHeight)
+            }
             if let maxHeight = maxHeight {
                 if maxHeight.isInfinite {
                     style.expandVertically = true
@@ -39,12 +47,8 @@ extension View {
                     style.expand = true
                     style.fill = true
                 } else {
-                    style.height = Int(maxHeight)
+                    style.maxHeight = Int(maxHeight)
                 }
-            } else if let idealHeight = idealHeight {
-                style.height = Int(idealHeight)
-            } else if let minHeight = minHeight {
-                style.height = Int(minHeight)
             }
 
             if let alignment = alignment {
@@ -87,6 +91,7 @@ extension View {
 
 
 
+/// Vertical edge for `.safeAreaInset(edge:content:)`.
 public enum VerticalEdge: Sendable, Equatable {
     case top
     case bottom

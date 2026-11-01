@@ -209,7 +209,7 @@ public struct DisclosureGroup<Content: View>: View, _PrimitiveView {
 
 
 
-// MARK: - ContentUnavailableView & AsyncImage
+// MARK: - ContentUnavailableView
 
 /// A standard view for displaying empty states, search misses, or offline errors on E-Ink.
 public struct ContentUnavailableView: View, _PrimitiveView {

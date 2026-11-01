@@ -11,7 +11,7 @@ public struct Picker<SelectionValue: Equatable>: View, _PrimitiveView {
     public let labelProvider: (SelectionValue) -> String
     public let height: Int?
     public let onSelect: ((SelectionValue) -> Void)?
-    private var styleVariant: KindlePickerStyle = .segmented
+    private var styleVariant: KindlePickerStyle? = nil
 
     public init<C: RandomAccessCollection>(
         _ title: String? = nil,
@@ -36,31 +36,20 @@ public struct Picker<SelectionValue: Equatable>: View, _PrimitiveView {
         return copy
     }
 
-    private static func segmentedItemShape(index: Int, count: Int) -> UnevenRoundedRectangle {
-        if count <= 1 {
-            return UnevenRoundedRectangle(topLeadingRadius: 999, bottomLeadingRadius: 999, bottomTrailingRadius: 999, topTrailingRadius: 999)
-        } else if index == 0 {
-            return UnevenRoundedRectangle(topLeadingRadius: 999, bottomLeadingRadius: 999, bottomTrailingRadius: 0, topTrailingRadius: 0)
-        } else if index == count - 1 {
-            return UnevenRoundedRectangle(topLeadingRadius: 0, bottomLeadingRadius: 0, bottomTrailingRadius: 999, topTrailingRadius: 999)
-        } else {
-            return UnevenRoundedRectangle(topLeadingRadius: 0, bottomLeadingRadius: 0, bottomTrailingRadius: 0, topTrailingRadius: 0)
-        }
-    }
-
     public func _makeNode() -> RenderNode {
         let theme = KindleTheme.current
         let current = selection.wrappedValue
+        let resolvedStyle = styleVariant ?? KindleStateRegistry.shared.currentEnvironment.pickerStyleOverride ?? .segmented
 
         let controlNode: RenderNode
-        switch styleVariant {
+        switch resolvedStyle {
         case .segmented:
             // Pill-shaped outer track where only the first item is rounded on the left and last item on the right
             controlNode = HStack(alignment: .center, spacing: 4, homogeneous: true) {
                 ForEach(options.indices) { idx in
                     let item = options[idx]
                     let active = (item == current)
-                    let itemShape = Self.segmentedItemShape(index: idx, count: options.count)
+                    let itemShape = UnevenRoundedRectangle.segmentedPill(index: idx, count: options.count)
                     Button(labelProvider(item)) {
                         if selection.wrappedValue != item {
                             selection.wrappedValue = item
@@ -157,7 +146,7 @@ public struct Menu<Content: View>: View, _PrimitiveView {
     public typealias Body = Never
     public let title: String
     public let icon: KindleIconName?
-    private let isExpandedBox: StateBox<Bool>
+    private let siteKey: String
     private let content: () -> Content
 
     public init(
@@ -170,17 +159,17 @@ public struct Menu<Content: View>: View, _PrimitiveView {
     ) {
         self.title = title
         self.icon = icon
-        self.isExpandedBox = KindleStateRegistry.shared.obtainBox(
-            siteKey: "menu:\(fileID):\(line):\(column)",
-            initialValue: { false }
-        )
+        self.siteKey = "menu:\(fileID):\(line):\(column)"
         self.content = content
     }
 
     public func _makeNode() -> RenderNode {
         let theme = KindleTheme.current
-        let expanded = isExpandedBox.value
-        let box = isExpandedBox
+        let box = KindleStateRegistry.shared.obtainBox(
+            siteKey: siteKey,
+            initialValue: { false }
+        )
+        let expanded = box.value
         let items = content().buildRenderTree().flattenedChildren
 
         return VStack(alignment: .leading, spacing: 10) {

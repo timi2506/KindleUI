@@ -19,7 +19,9 @@ public struct KindleRect: Equatable, Sendable {
     public var isEmpty: Bool { w <= 0 || h <= 0 }
 
     public func union(_ o: KindleRect) -> KindleRect {
-        let nx = min(x, o.x), ny = max(0, min(y, o.y))
+        if isEmpty { return o }
+        if o.isEmpty { return self }
+        let nx = min(x, o.x), ny = min(y, o.y)
         return KindleRect(x: nx, y: ny, w: max(maxX, o.maxX) - nx, h: max(maxY, o.maxY) - ny)
     }
 
@@ -275,52 +277,15 @@ public struct GraphicsContext {
 
     public func stroke(_ path: Path, with color: EInkColor = .black, lineWidth: Int = 2) {
         let radius = max(1, lineWidth / 2)
-        let gray = color.grayLevel
-        var cur = KindlePoint.zero
-        var start = KindlePoint.zero
-        for el in path.elements {
-            switch el {
-            case .move(let p):
-                cur = p
-                start = p
-            case .line(let p):
-                buffer.drawLine(fromX: Int(cur.x), fromY: Int(cur.y), toX: Int(p.x), toY: Int(p.y), radius: radius, gray: gray)
-                cur = p
-            case .quadCurve(let end, let ctrl):
-                var prev = cur
-                for s in 1...20 {
-                    let t = Double(s) / 20.0
-                    let mt = 1.0 - t
-                    let pt = KindlePoint(
-                        x: mt * mt * cur.x + 2 * mt * t * ctrl.x + t * t * end.x,
-                        y: mt * mt * cur.y + 2 * mt * t * ctrl.y + t * t * end.y
-                    )
-                    buffer.drawLine(fromX: Int(prev.x), fromY: Int(prev.y), toX: Int(pt.x), toY: Int(pt.y), radius: radius, gray: gray)
-                    prev = pt
-                }
-                cur = end
-            case .curve(let end, let c1, let c2):
-                var prev = cur
-                for s in 1...24 {
-                    let t = Double(s) / 24.0
-                    let mt = 1.0 - t
-                    let pt = KindlePoint(
-                        x: mt * mt * mt * cur.x + 3 * mt * mt * t * c1.x + 3 * mt * t * t * c2.x + t * t * t * end.x,
-                        y: mt * mt * mt * cur.y + 3 * mt * mt * t * c1.y + 3 * mt * t * t * c2.y + t * t * t * end.y
-                    )
-                    buffer.drawLine(fromX: Int(prev.x), fromY: Int(prev.y), toX: Int(pt.x), toY: Int(pt.y), radius: radius, gray: gray)
-                    prev = pt
-                }
-                cur = end
-            case .rect(let r):
-                buffer.drawRect(fromX: r.x, fromY: r.y, toX: r.maxX, toY: r.maxY, radius: radius, gray: gray, filled: false)
-            case .ellipse(let r):
-                buffer.drawCircle(centerX: r.x + r.w / 2, centerY: r.y + r.h / 2, circleRadius: min(r.w, r.h) / 2, strokeRadius: radius, gray: gray, filled: false)
-            case .closeSubpath:
-                buffer.drawLine(fromX: Int(cur.x), fromY: Int(cur.y), toX: Int(start.x), toY: Int(start.y), radius: radius, gray: gray)
-                cur = start
-            }
-        }
+        Path.rasterizeElements(
+            path.elements,
+            into: buffer,
+            strokeRadius: radius,
+            strokeGray: color.grayLevel,
+            fillGray: nil,
+            sx: { $0 },
+            sy: { $0 }
+        )
     }
 
     public func fill(_ path: Path, with color: EInkColor = .black) {

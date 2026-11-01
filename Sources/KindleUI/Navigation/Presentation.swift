@@ -384,13 +384,15 @@ public enum PopoverAttachmentAnchor: Sendable, Equatable {
     case rect(x: Int, y: Int, width: Int, height: Int)
 }
 
-extension View {
-    /// Attaches a context menu to the view that opens on long-press.
-    public func contextMenu<MenuItems: View>(
-        @ViewBuilder menuItems: @escaping () -> MenuItems
-    ) -> some View {
+private struct _ContextMenuView<Content: View, MenuItems: View>: View, _PrimitiveView {
+    typealias Body = Never
+    let content: Content
+    let siteKey: String
+    let menuItems: () -> MenuItems
+
+    func _makeNode() -> RenderNode {
         let presentedBox = KindleStateRegistry.shared.obtainBox(
-            siteKey: "ctx-menu",
+            siteKey: siteKey,
             initialValue: { false }
         )
         let isOpenBinding = Binding<Bool>(
@@ -400,7 +402,7 @@ extension View {
                 KindleStateRegistry.shared.notifyStateMutation()
             }
         )
-        return self
+        return content
             .onLongPressGesture {
                 isOpenBinding.wrappedValue = true
             }
@@ -409,6 +411,23 @@ extension View {
                     menuItems()
                 }
             }
+            .buildRenderTree()
+    }
+}
+
+extension View {
+    /// Attaches a context menu to the view that opens on long-press.
+    public func contextMenu<MenuItems: View>(
+        fileID: String = #fileID,
+        line: Int = #line,
+        column: Int = #column,
+        @ViewBuilder menuItems: @escaping () -> MenuItems
+    ) -> some View {
+        _ContextMenuView(
+            content: self,
+            siteKey: "ctx-menu:\(fileID):\(line):\(column)",
+            menuItems: menuItems
+        )
     }
 
     /// Presents a popover callout card when a given condition is true.

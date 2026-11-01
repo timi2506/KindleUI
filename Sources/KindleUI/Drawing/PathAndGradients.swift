@@ -126,117 +126,144 @@ public struct Path: View, _PrimitiveView, Sendable {
                 let margin = Double(baseRadius * 2 + 8)
                 let availW = max(16.0, Double(w) - margin * 2.0)
                 let availH = max(16.0, Double(h) - margin * 2.0)
-                let scaleX = maxX > 40.0 ? (availW / maxX) : 1.0
+                let scaleX = maxX > availW ? (availW / maxX) : (maxX > 40.0 ? (availW / maxX) : 1.0)
                 let scaleY = maxY > availH ? (availH / maxY) : 1.0
                 let scale = min(scaleX, scaleY)
                 let radius = max(1, Int((Double(baseRadius) * max(0.65, scale)).rounded()))
 
-                func sx(_ x: Double) -> Double { margin + x * scaleX }
-                func sy(_ y: Double) -> Double { margin * 0.5 + y * scaleY }
-
-                var cur = KindlePoint.zero
-                var start = KindlePoint.zero
-                for el in capturedElements {
-                    switch el {
-                    case .move(let p):
-                        let sp = KindlePoint(x: sx(p.x), y: sy(p.y))
-                        cur = sp
-                        start = sp
-                    case .line(let p):
-                        let sp = KindlePoint(x: sx(p.x), y: sy(p.y))
-                        buf.drawLine(
-                            fromX: Int(cur.x.rounded()),
-                            fromY: Int(cur.y.rounded()),
-                            toX: Int(sp.x.rounded()),
-                            toY: Int(sp.y.rounded()),
-                            radius: radius,
-                            gray: strokeGray
-                        )
-                        cur = sp
-                    case .quadCurve(let end, let ctrl):
-                        let sEnd = KindlePoint(x: sx(end.x), y: sy(end.y))
-                        let sCtrl = KindlePoint(x: sx(ctrl.x), y: sy(ctrl.y))
-                        let steps = 28
-                        var prev = cur
-                        for s in 1...steps {
-                            let t = Double(s) / Double(steps)
-                            let mt = 1.0 - t
-                            let x = mt * mt * cur.x + 2.0 * mt * t * sCtrl.x + t * t * sEnd.x
-                            let y = mt * mt * cur.y + 2.0 * mt * t * sCtrl.y + t * t * sEnd.y
-                            let pt = KindlePoint(x: x, y: y)
-                            buf.drawLine(
-                                fromX: Int(prev.x.rounded()),
-                                fromY: Int(prev.y.rounded()),
-                                toX: Int(pt.x.rounded()),
-                                toY: Int(pt.y.rounded()),
-                                radius: radius,
-                                gray: strokeGray
-                            )
-                            prev = pt
-                        }
-                        cur = sEnd
-                    case .curve(let end, let c1, let c2):
-                        let sEnd = KindlePoint(x: sx(end.x), y: sy(end.y))
-                        let sC1 = KindlePoint(x: sx(c1.x), y: sy(c1.y))
-                        let sC2 = KindlePoint(x: sx(c2.x), y: sy(c2.y))
-                        let steps = 32
-                        var prev = cur
-                        for s in 1...steps {
-                            let t = Double(s) / Double(steps)
-                            let mt = 1.0 - t
-                            let x = mt * mt * mt * cur.x + 3.0 * mt * mt * t * sC1.x + 3.0 * mt * t * t * sC2.x + t * t * t * sEnd.x
-                            let y = mt * mt * mt * cur.y + 3.0 * mt * mt * t * sC1.y + 3.0 * mt * t * t * sC2.y + t * t * t * sEnd.y
-                            let pt = KindlePoint(x: x, y: y)
-                            buf.drawLine(
-                                fromX: Int(prev.x.rounded()),
-                                fromY: Int(prev.y.rounded()),
-                                toX: Int(pt.x.rounded()),
-                                toY: Int(pt.y.rounded()),
-                                radius: radius,
-                                gray: strokeGray
-                            )
-                            prev = pt
-                        }
-                        cur = sEnd
-                    case .rect(let r):
-                        let x0 = Int(sx(Double(r.x)).rounded())
-                        let y0 = Int(sy(Double(r.y)).rounded())
-                        let x1 = Int(sx(Double(r.maxX)).rounded())
-                        let y1 = Int(sy(Double(r.maxY)).rounded())
-                        if let fg = fillGray {
-                            buf.drawRect(fromX: x0, fromY: y0, toX: x1, toY: y1, radius: radius, gray: fg, filled: true)
-                        }
-                        buf.drawRect(fromX: x0, fromY: y0, toX: x1, toY: y1, radius: radius, gray: strokeGray, filled: false)
-                    case .ellipse(let r):
-                        let x0 = Int(sx(Double(r.x)).rounded())
-                        let y0 = Int(sy(Double(r.y)).rounded())
-                        let x1 = Int(sx(Double(r.maxX)).rounded())
-                        let y1 = Int(sy(Double(r.maxY)).rounded())
-                        let cx = (x0 + x1) / 2
-                        let cy = (y0 + y1) / 2
-                        let rad = min(max(2, x1 - x0), max(2, y1 - y0)) / 2
-                        if let fg = fillGray {
-                            buf.drawCircle(centerX: cx, centerY: cy, circleRadius: rad, strokeRadius: radius, gray: fg, filled: true)
-                        }
-                        buf.drawCircle(centerX: cx, centerY: cy, circleRadius: rad, strokeRadius: radius, gray: strokeGray, filled: false)
-                    case .closeSubpath:
-                        buf.drawLine(
-                            fromX: Int(cur.x.rounded()),
-                            fromY: Int(cur.y.rounded()),
-                            toX: Int(start.x.rounded()),
-                            toY: Int(start.y.rounded()),
-                            radius: radius,
-                            gray: strokeGray
-                        )
-                        cur = start
-                    }
-                }
+                Path.rasterizeElements(
+                    capturedElements,
+                    into: buf,
+                    strokeRadius: radius,
+                    strokeGray: strokeGray,
+                    fillGray: fillGray,
+                    sx: { margin + $0 * scaleX },
+                    sy: { margin * 0.5 + $0 * scaleY }
+                )
             }
         )
         .frame(height: 180)
         .buildRenderTree()
     }
+
+    internal static func rasterizeElements(
+        _ elements: [Element],
+        into buf: KindleCanvasBuffer,
+        strokeRadius radius: Int,
+        strokeGray: UInt8,
+        fillGray: UInt8?,
+        sx: (Double) -> Double,
+        sy: (Double) -> Double
+    ) {
+        var cur = KindlePoint.zero
+        var start = KindlePoint.zero
+        for el in elements {
+            switch el {
+            case .move(let p):
+                let sp = KindlePoint(x: sx(p.x), y: sy(p.y))
+                cur = sp
+                start = sp
+            case .line(let p):
+                let sp = KindlePoint(x: sx(p.x), y: sy(p.y))
+                buf.drawLine(
+                    fromX: Int(cur.x.rounded()),
+                    fromY: Int(cur.y.rounded()),
+                    toX: Int(sp.x.rounded()),
+                    toY: Int(sp.y.rounded()),
+                    radius: radius,
+                    gray: strokeGray
+                )
+                cur = sp
+            case .quadCurve(let end, let ctrl):
+                let sEnd = KindlePoint(x: sx(end.x), y: sy(end.y))
+                let sCtrl = KindlePoint(x: sx(ctrl.x), y: sy(ctrl.y))
+                let steps = 28
+                var prev = cur
+                for s in 1...steps {
+                    let t = Double(s) / Double(steps)
+                    let mt = 1.0 - t
+                    let pt = KindlePoint(
+                        x: mt * mt * cur.x + 2.0 * mt * t * sCtrl.x + t * t * sEnd.x,
+                        y: mt * mt * cur.y + 2.0 * mt * t * sCtrl.y + t * t * sEnd.y
+                    )
+                    buf.drawLine(
+                        fromX: Int(prev.x.rounded()),
+                        fromY: Int(prev.y.rounded()),
+                        toX: Int(pt.x.rounded()),
+                        toY: Int(pt.y.rounded()),
+                        radius: radius,
+                        gray: strokeGray
+                    )
+                    prev = pt
+                }
+                cur = sEnd
+            case .curve(let end, let c1, let c2):
+                let sEnd = KindlePoint(x: sx(end.x), y: sy(end.y))
+                let sC1 = KindlePoint(x: sx(c1.x), y: sy(c1.y))
+                let sC2 = KindlePoint(x: sx(c2.x), y: sy(c2.y))
+                let steps = 32
+                var prev = cur
+                for s in 1...steps {
+                    let t = Double(s) / Double(steps)
+                    let mt = 1.0 - t
+                    let pt = KindlePoint(
+                        x: mt * mt * mt * cur.x + 3.0 * mt * mt * t * sC1.x + 3.0 * mt * t * t * sC2.x + t * t * t * sEnd.x,
+                        y: mt * mt * mt * cur.y + 3.0 * mt * mt * t * sC1.y + 3.0 * mt * t * t * sC2.y + t * t * t * sEnd.y
+                    )
+                    buf.drawLine(
+                        fromX: Int(prev.x.rounded()),
+                        fromY: Int(prev.y.rounded()),
+                        toX: Int(pt.x.rounded()),
+                        toY: Int(pt.y.rounded()),
+                        radius: radius,
+                        gray: strokeGray
+                    )
+                    prev = pt
+                }
+                cur = sEnd
+            case .rect(let r):
+                let x0 = Int(sx(Double(r.x)).rounded())
+                let y0 = Int(sy(Double(r.y)).rounded())
+                let x1 = Int(sx(Double(r.maxX)).rounded())
+                let y1 = Int(sy(Double(r.maxY)).rounded())
+                if let fg = fillGray {
+                    buf.drawRect(fromX: x0, fromY: y0, toX: x1, toY: y1, radius: radius, gray: fg, filled: true)
+                }
+                buf.drawRect(fromX: x0, fromY: y0, toX: x1, toY: y1, radius: radius, gray: strokeGray, filled: false)
+            case .ellipse(let r):
+                let x0 = Int(sx(Double(r.x)).rounded())
+                let y0 = Int(sy(Double(r.y)).rounded())
+                let x1 = Int(sx(Double(r.maxX)).rounded())
+                let y1 = Int(sy(Double(r.maxY)).rounded())
+                let cx = (x0 + x1) / 2
+                let cy = (y0 + y1) / 2
+                let rad = min(max(2, x1 - x0), max(2, y1 - y0)) / 2
+                if let fg = fillGray {
+                    buf.drawCircle(centerX: cx, centerY: cy, circleRadius: rad, strokeRadius: radius, gray: fg, filled: true)
+                }
+                buf.drawCircle(centerX: cx, centerY: cy, circleRadius: rad, strokeRadius: radius, gray: strokeGray, filled: false)
+            case .closeSubpath:
+                buf.drawLine(
+                    fromX: Int(cur.x.rounded()),
+                    fromY: Int(cur.y.rounded()),
+                    toX: Int(start.x.rounded()),
+                    toY: Int(start.y.rounded()),
+                    radius: radius,
+                    gray: strokeGray
+                )
+                cur = start
+            }
+        }
+    }
 }
+
+/// Shared 4x4 Bayer ordered dithering threshold matrix for E-Ink gradients.
+internal let kindleBayer4x4: [Double] = [
+     0.0 / 16.0,  8.0 / 16.0,  2.0 / 16.0, 10.0 / 16.0,
+    12.0 / 16.0,  4.0 / 16.0, 14.0 / 16.0,  6.0 / 16.0,
+     3.0 / 16.0, 11.0 / 16.0,  1.0 / 16.0,  9.0 / 16.0,
+    15.0 / 16.0,  7.0 / 16.0, 13.0 / 16.0,  5.0 / 16.0
+]
 
 /// A color gradient represented as an array of E-Ink grayscale stops.
 public struct Gradient: Equatable, Sendable {
@@ -266,13 +293,6 @@ public struct LinearGradient: View, _PrimitiveView {
     public let endPoint: UnitPoint
     public let dithered: Bool
     public let height: Int
-
-    private static let bayer4x4: [Double] = [
-         0.0 / 16.0,  8.0 / 16.0,  2.0 / 16.0, 10.0 / 16.0,
-        12.0 / 16.0,  4.0 / 16.0, 14.0 / 16.0,  6.0 / 16.0,
-         3.0 / 16.0, 11.0 / 16.0,  1.0 / 16.0,  9.0 / 16.0,
-        15.0 / 16.0,  7.0 / 16.0, 13.0 / 16.0,  5.0 / 16.0
-    ]
 
     public init(
         gradient: Gradient,
@@ -323,7 +343,7 @@ public struct LinearGradient: View, _PrimitiveView {
                         let t = ((nx - sp.x) * dx + (ny - sp.y) * dy) / lenSq
                         let gray = grad.sampleGray(at: t)
                         if useDither {
-                            let threshold = Self.bayer4x4[(y & 3) * 4 + (x & 3)] * 255.0
+                            let threshold = kindleBayer4x4[(y & 3) * 4 + (x & 3)] * 255.0
                             buf.pixels[rowBase + x] = (Double(gray) > threshold) ? 255 : 0
                         } else {
                             buf.pixels[rowBase + x] = gray
@@ -346,13 +366,6 @@ public struct RadialGradient: View, _PrimitiveView {
     public let center: UnitPoint
     public let dithered: Bool
     public let height: Int
-
-    private static let bayer4x4: [Double] = [
-         0.0 / 16.0,  8.0 / 16.0,  2.0 / 16.0, 10.0 / 16.0,
-        12.0 / 16.0,  4.0 / 16.0, 14.0 / 16.0,  6.0 / 16.0,
-         3.0 / 16.0, 11.0 / 16.0,  1.0 / 16.0,  9.0 / 16.0,
-        15.0 / 16.0,  7.0 / 16.0, 13.0 / 16.0,  5.0 / 16.0
-    ]
 
     public init(
         gradient: Gradient,
@@ -396,7 +409,7 @@ public struct RadialGradient: View, _PrimitiveView {
                         let t = min(1.0, max(0.0, hypot(nx, ny)))
                         let gray = grad.sampleGray(at: t)
                         if useDither {
-                            let threshold = Self.bayer4x4[(y & 3) * 4 + (x & 3)] * 255.0
+                            let threshold = kindleBayer4x4[(y & 3) * 4 + (x & 3)] * 255.0
                             buf.pixels[rowBase + x] = (Double(gray) > threshold) ? 255 : 0
                         } else {
                             buf.pixels[rowBase + x] = gray

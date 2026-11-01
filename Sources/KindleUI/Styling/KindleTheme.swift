@@ -42,6 +42,56 @@ public struct KindleTheme: Sendable, Equatable {
     public static var current: KindleTheme {
         KindleStateRegistry.shared.colorScheme == .dark ? .dark : .light
     }
+
+    // MARK: - Kaleido 3 Colorsoft Adaptive Semantic Tokens (with automatic 4-bit monochrome fallback)
+
+    public var accent: EInkColor {
+        scheme == .dark ? .softBlueTint : .navyAccent
+    }
+
+    public var linkAccent: EInkColor {
+        scheme == .dark ? .softBlueTint : .royalBlue
+    }
+
+    public var wiktionaryAccent: EInkColor {
+        scheme == .dark ? .softTealTint : .tealAccent
+    }
+
+    public var accentPanel: EInkColor {
+        scheme == .dark ? .darkNavyCard : .softBlueTint
+    }
+
+    public var wiktionaryPanel: EInkColor {
+        scheme == .dark ? .darkNavyCard : .softTealTint
+    }
+
+    public var warmPanel: EInkColor {
+        scheme == .dark ? .charcoal : .softAmberTint
+    }
+
+    public var savedPanel: EInkColor {
+        scheme == .dark ? .charcoal : .softGreenTint
+    }
+
+    public var savedAccent: EInkColor {
+        scheme == .dark ? .softGreenTint : .forestGreen
+    }
+
+    public var featuredAccent: EInkColor {
+        scheme == .dark ? .softAmberTint : .amberGold
+    }
+
+    public var destructiveAccent: EInkColor {
+        scheme == .dark ? .softRoseTint : .crimsonRed
+    }
+
+    public var accentBorder: EInkColor {
+        scheme == .dark ? .darkGray : .blueBorder
+    }
+
+    public var warmBorder: EInkColor {
+        scheme == .dark ? .darkGray : .amberBorder
+    }
 }
 
 

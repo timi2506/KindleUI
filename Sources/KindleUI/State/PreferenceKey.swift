@@ -66,6 +66,4 @@ extension View {
     ) -> some View where K.Value: Equatable {
         _PreferenceReaderView<Self, K>(content: self, siteID: siteID, action: action)
     }
-
-    /// Injects a `ModelContainer` into the view hierarchy's environment for `@Query` and `@Environment(\.modelContext)`.
 }

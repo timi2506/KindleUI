@@ -204,5 +204,3 @@ public enum Axis: Int8, CaseIterable, Sendable, Equatable {
         public static let vertical = Axis.Set(rawValue: 1 << 1)
     }
 }
-
-/// A shape that is replaced by an inset version of the current container's shape.

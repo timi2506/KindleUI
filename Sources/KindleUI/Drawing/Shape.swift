@@ -230,6 +230,7 @@ extension View {
 
 
 
+/// A shape that is replaced by an inset version of the current container's shape.
 public struct ContainerRelativeShape: InsettableShape, _PrimitiveView {
     public typealias Body = Never
     private var inner = RoundedRectangle(cornerRadius: 16)
@@ -294,6 +295,19 @@ public struct UnevenRoundedRectangle: InsettableShape, _PrimitiveView {
         self.bottomLeadingRadius = max(0, bottomLeadingRadius)
         self.bottomTrailingRadius = max(0, bottomTrailingRadius)
         self.topTrailingRadius = max(0, topTrailingRadius)
+    }
+
+    /// Returns a pill-ended shape for an item at `index` within a horizontal segmented track of `count` items.
+    public static func segmentedPill(index: Int, count: Int) -> UnevenRoundedRectangle {
+        if count <= 1 {
+            return UnevenRoundedRectangle(topLeadingRadius: 999, bottomLeadingRadius: 999, bottomTrailingRadius: 999, topTrailingRadius: 999)
+        } else if index == 0 {
+            return UnevenRoundedRectangle(topLeadingRadius: 999, bottomLeadingRadius: 999, bottomTrailingRadius: 0, topTrailingRadius: 0)
+        } else if index == count - 1 {
+            return UnevenRoundedRectangle(topLeadingRadius: 0, bottomLeadingRadius: 0, bottomTrailingRadius: 999, topTrailingRadius: 999)
+        } else {
+            return UnevenRoundedRectangle(topLeadingRadius: 0, bottomLeadingRadius: 0, bottomTrailingRadius: 0, topTrailingRadius: 0)
+        }
     }
 
     public func fill(_ color: EInkColor) -> UnevenRoundedRectangle {

@@ -376,11 +376,8 @@ public final class KindlePreviewServer: @unchecked Sendable {
         switch type {
         case "tap":
             if let action = tapActions[id] {
-                let kbWasVisible = KindleKeyboardManager.shared.isVisible
-                let genBefore = KindleKeyboardManager.shared.interactionGeneration
-                action()
-                if kbWasVisible && KindleKeyboardManager.shared.isVisible && KindleKeyboardManager.shared.interactionGeneration == genBefore {
-                    KindleKeyboardManager.shared.dismiss()
+                KindleKeyboardManager.shared.performWithAutoDismiss {
+                    action()
                 }
                 KindleDevice.shared.performAutomaticRefresh(forceFull: false)
             }
@@ -424,11 +421,8 @@ public final class KindlePreviewServer: @unchecked Sendable {
         case "toggle":
             let value = (json["value"] as? Bool) ?? false
             if let action = toggleActions[id] {
-                let kbWasVisible = KindleKeyboardManager.shared.isVisible
-                let genBefore = KindleKeyboardManager.shared.interactionGeneration
-                action(value)
-                if kbWasVisible && KindleKeyboardManager.shared.isVisible && KindleKeyboardManager.shared.interactionGeneration == genBefore {
-                    KindleKeyboardManager.shared.dismiss()
+                KindleKeyboardManager.shared.performWithAutoDismiss {
+                    action(value)
                 }
                 KindleDevice.shared.performAutomaticRefresh(forceFull: false)
             }
@@ -555,17 +549,7 @@ public final class KindlePreviewServer: @unchecked Sendable {
     }
 
     internal func extractRootBackground(from node: RenderNode) -> EInkColor? {
-        switch node {
-        case .vstack(_, _, let children, let style),
-             .hstack(_, _, let children, let style),
-             .zstack(_, let children, let style):
-            return style.backgroundColor ?? children.first.flatMap { extractRootBackground(from: $0) }
-        case .scrollView(_, let child, let style),
-             .card(_, let child, let style):
-            return style.backgroundColor ?? extractRootBackground(from: child)
-        default:
-            return node.styleSnapshot?.backgroundColor
-        }
+        node.extractedRootBackground
     }
 
     internal func rebuildAndRenderLocked() -> String {
@@ -592,13 +576,7 @@ public final class KindlePreviewServer: @unchecked Sendable {
         let rootCtx = RenderContext(
             font: .body,
             fg: KindleTheme.current.foreground,
-            bg: rootBg,
-            buttonStyle: nil,
-            toggleStyle: nil,
-            controlSize: nil,
-            opacity: 1.0,
-            isDisabled: false,
-            isBehindModal: false
+            bg: rootBg
         )
 
         let (expV, fillV) = verticalExpansionFlags(for: tree)

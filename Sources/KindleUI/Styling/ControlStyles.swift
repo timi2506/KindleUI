@@ -84,7 +84,7 @@ public struct KindleShadow: Sendable, Equatable {
 
 
 
-// MARK: - 16. Custom Style Protocols, GroupBox, Link, PasteButton & RenameButton
+// MARK: - Custom Control Style Protocols (ButtonStyle, ToggleStyle, ProgressViewStyle)
 
 /// The properties of a button instance passed to `CustomButtonStyle.makeBody(configuration:)`.
 public struct ButtonStyleConfiguration {

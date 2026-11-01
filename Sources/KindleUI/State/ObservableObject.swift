@@ -26,26 +26,33 @@ extension ObservableObject {
 /// A property wrapper that publishes changes to an `ObservableObject` property and triggers a KindleUI view update.
 @propertyWrapper
 public struct Published<Value>: @unchecked Sendable {
-    private var storage: Value
+    private final class Box: @unchecked Sendable {
+        var value: Value
+        init(_ value: Value) {
+            self.value = value
+        }
+    }
+
+    private let box: Box
 
     public init(wrappedValue: Value) {
-        self.storage = wrappedValue
+        self.box = Box(wrappedValue)
     }
 
     public var wrappedValue: Value {
-        get { storage }
-        set {
-            storage = newValue
+        get { box.value }
+        nonmutating set {
+            box.value = newValue
             KindleStateRegistry.shared.notifyStateMutation()
         }
     }
 
     public var projectedValue: Binding<Value> {
-        var copy = self
+        let box = self.box
         return Binding(
-            get: { copy.storage },
+            get: { box.value },
             set: {
-                copy.storage = $0
+                box.value = $0
                 KindleStateRegistry.shared.notifyStateMutation()
             }
         )

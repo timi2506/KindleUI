@@ -169,4 +169,57 @@ final class RenderTreeDiffTests: XCTestCase {
         let b = Demo(n: 7).buildRenderTree()
         XCTAssertTrue(a.isStructurallyEqual(to: b))
     }
+
+    func testSpeculativePagerEvaluationScopesOverrideAndSuppressesSideEffects() {
+        let registry = KindleStateRegistry.shared
+        registry.resetAllState()
+
+        var disappearedCount = 0
+        var page = 0
+        let pageBinding = Binding(get: { page }, set: { page = $0 })
+
+        struct PagerHost: View {
+            let pageBinding: Binding<Int>
+            let onDisappear: () -> Void
+            var body: some View {
+                VStack {
+                    Text("Header")
+                        .onDisappear(perform: onDisappear)
+                    KindlePager(pages: ["Page A", "Page B", "Page C", "Page D"], currentPage: pageBinding) { _, text in
+                        Text(text)
+                    }
+                }
+            }
+        }
+
+        page = 1
+        let liveTree = registry.evaluateTree {
+            PagerHost(pageBinding: pageBinding, onDisappear: { disappearedCount += 1 }).buildRenderTree()
+        }
+        guard let pagerState = registry.lastRenderedPagerState else {
+            return XCTFail("Expected lastRenderedPagerState to be populated")
+        }
+        XCTAssertEqual(pagerState.currentIndex, 1)
+        XCTAssertEqual(pagerState.totalPages, 4)
+
+        let speculativeNext = registry.evaluateSpeculativeTree(
+            pagerOverride: (scopeKey: pagerState.scopeKey, pageIndex: 2)
+        ) {
+            PagerHost(pageBinding: pageBinding, onDisappear: { disappearedCount += 1 }).buildRenderTree()
+        }
+
+        XCTAssertEqual(disappearedCount, 0)
+        XCTAssertTrue(liveTree.isStructurallyEqual(to: speculativeNext))
+
+        var liveTexts: [(text: String, markup: String?)] = []
+        var liveBars: [(fraction: Double, text: String?)] = []
+        _ = liveTree.collectLiveContent(texts: &liveTexts, progressBars: &liveBars)
+
+        var specTexts: [(text: String, markup: String?)] = []
+        var specBars: [(fraction: Double, text: String?)] = []
+        _ = speculativeNext.collectLiveContent(texts: &specTexts, progressBars: &specBars)
+
+        XCTAssertTrue(liveTexts.contains(where: { $0.text == "Page B" }))
+        XCTAssertTrue(specTexts.contains(where: { $0.text == "Page C" }))
+    }
 }

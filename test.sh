@@ -6,5 +6,5 @@ cd "$(dirname "$0")"
 echo "### KindleUI tests"
 swift test
 
-echo "### KindleShowcase & KindleWiki (Examples/) build + tests"
+echo "### Example apps (Examples/) build + tests"
 (cd Examples && swift test && swift build)

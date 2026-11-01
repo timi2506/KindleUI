@@ -4,6 +4,22 @@ import CKindleGTK
 
 /// Renders a `KindleUI` view hierarchy onto native GTK+-2.0 & Cairo widgets (for Kindle OS and Linux/X11 desktops).
 public final class GTK2Renderer: @unchecked Sendable {
+    internal struct MountedSlot {
+        var rootWidget: KWidgetRef
+        var tree: RenderNode
+        var theme: KindleTheme
+        var keyboardVisible: Bool
+        var imageStamps: [(path: String, stamp: FileStamp)]
+        var labels: [(widget: KWidgetRef, text: String, markup: String?, fgGray: UInt8)]
+        var progressBars: [(barWidget: KWidgetRef, barTarget: GTKCairoTarget, labelWidget: KWidgetRef?, fraction: Double, text: String?)]
+        var signalTargets: [GTKSignalTarget]
+        var targetPaths: [[Int]]
+        var primaryScrolledWindow: KWidgetRef?
+        var modalScrolledWindow: KWidgetRef?
+        var isPrerendered: Bool
+        var lastUsedOrder: UInt64
+    }
+
     internal var window: KWidgetRef?
     internal var rootContainer: KWidgetRef?
     internal var activeSignalTargets: [GTKSignalTarget] = []
@@ -19,6 +35,11 @@ public final class GTK2Renderer: @unchecked Sendable {
     internal var mountedWindowTitle: String?
     internal var mountedLabels: [(widget: KWidgetRef, text: String, markup: String?, fgGray: UInt8)] = []
     internal var mountedProgressBars: [(barWidget: KWidgetRef, barTarget: GTKCairoTarget, labelWidget: KWidgetRef?, fraction: Double, text: String?)] = []
+    internal var mountedSlots: [MountedSlot] = []
+    internal var activeSlotIndex: Int? = nil
+    private let maxCachedSlots: Int = 6
+    private var slotUsageCounter: UInt64 = 0
+    internal var pendingPrerenderPages: [(scopeKey: String, pageIndex: Int)] = []
     internal let makeTree: () -> RenderNode
     internal let defaultConfig: KindleWindowConfig
     internal var isRebuilding: Bool = false
@@ -65,15 +86,20 @@ public final class GTK2Renderer: @unchecked Sendable {
         let targetH: Int32
         if effectiveConfig.layer == .application, screenW > 0, screenH > 0 {
             targetW = screenW
+            // Modern Kindle firmware (PW5 1648px, Scribe 2480px, Scribe Colorsoft 2648px)
+            // uses fixed 101px/115px/162px X11 heights for JunoStatusBarDriver & KPP chrome;
+            // only scale down on legacy displays smaller than 1648px.
+            let chromeScale = min(1.0, Double(screenH) / 1648.0)
             var chromeInsetH: Int32 = 0
             if effectiveConfig.persistentChrome.contains(.topBar) {
-                chromeInsetH += Int32((Double(screenH) * 101.0 / 1648.0).rounded())
+                chromeInsetH += Int32((101.0 * chromeScale).rounded())
+                KindleDevice.shared.setLipcInt(service: "com.lab126.chromebar", property: "configurePill", value: 1)
             }
             if effectiveConfig.persistentChrome.contains(.searchBar) {
-                chromeInsetH += Int32((Double(screenH) * 115.0 / 1648.0).rounded())
+                chromeInsetH += Int32((115.0 * chromeScale).rounded())
             }
             if effectiveConfig.persistentChrome.contains(.bottomBar) {
-                chromeInsetH += Int32((Double(screenH) * 162.0 / 1648.0).rounded())
+                chromeInsetH += Int32((162.0 * chromeScale).rounded())
             }
             targetH = max(200, screenH - chromeInsetH)
         } else {
@@ -108,6 +134,8 @@ public final class GTK2Renderer: @unchecked Sendable {
         KindleDevice.shared.performAutomaticRefresh()
         if pendingRebuild && !idleRebuildScheduled {
             scheduleRebuild()
+        } else {
+            scheduleAdjacentPagerPrerenderIfNeeded()
         }
         kgtk_main()
         return true
@@ -293,27 +321,58 @@ public final class GTK2Renderer: @unchecked Sendable {
             }
         }
 
+        let rootBg = extractRootBackground(from: updatedTree) ?? KindleTheme.current.background
+
+        // Fast-path 1: If an inactive pre-rendered slot in `mountedSlots` already has the exact text & structure
+        // (e.g. next/previous page pre-rendered during idle time), switch to that slot immediately via XCopyArea!
+        if activateCachedSlotIfAvailable(effectiveTree, rootBg: rootBg, window: window, requireExactTextMatch: true) {
+            KindleKeyboardManager.shared.flushPendingNativeKeyboardAction()
+            let forceFull = KindleStateRegistry.shared.pendingFullRefresh
+            KindleStateRegistry.shared.pendingFullRefresh = false
+            KindleDevice.shared.performAutomaticRefresh(forceFull: forceFull)
+            isRebuilding = false
+            if pendingRebuild && !idleRebuildScheduled {
+                scheduleRebuild()
+            } else {
+                scheduleAdjacentPagerPrerenderIfNeeded()
+            }
+            return
+        }
+
+        // Fast-path 2: Apply incremental update in place on the currently active slot if structurally equal.
         if applyIncrementalUpdate(effectiveTree, window: window) {
             KindleKeyboardManager.shared.flushPendingNativeKeyboardAction()
             isRebuilding = false
             if pendingRebuild && !idleRebuildScheduled {
                 scheduleRebuild()
+            } else {
+                scheduleAdjacentPagerPrerenderIfNeeded()
             }
             return
         }
 
-        let rootBg = extractRootBackground(from: updatedTree) ?? KindleTheme.current.background
+        // Fast-path 3: Reuse an inactive cached slot with matching structure (patching labels in place).
+        if activateCachedSlotIfAvailable(effectiveTree, rootBg: rootBg, window: window, requireExactTextMatch: false) {
+            KindleKeyboardManager.shared.flushPendingNativeKeyboardAction()
+            let forceFull = KindleStateRegistry.shared.pendingFullRefresh
+            KindleStateRegistry.shared.pendingFullRefresh = false
+            KindleDevice.shared.performAutomaticRefresh(forceFull: forceFull)
+            isRebuilding = false
+            if pendingRebuild && !idleRebuildScheduled {
+                scheduleRebuild()
+            } else {
+                scheduleAdjacentPagerPrerenderIfNeeded()
+            }
+            return
+        }
+
         kgtk_window_freeze_updates(window)
 
-        _ = kgtk_take_suppressed_redraw_widget() // about to be destroyed
-        kgtk_container_clear(rootContainer)
+        _ = kgtk_take_suppressed_redraw_widget()
         kgtk_widget_modify_bg_gray(window, 0, rootBg.grayLevel)
         kgtk_widget_modify_bg_gray(rootContainer, 0, rootBg.grayLevel)
-        activeSignalTargets.removeAll(keepingCapacity: true)
-        activeTargetPaths.removeAll(keepingCapacity: true)
 
         mountTree(effectiveTree, rootBg: rootBg)
-        kgtk_widget_show_all(rootContainer)
         kgtk_widget_queue_draw(window)
         kgtk_flush_updates(window)
         KindleKeyboardManager.shared.flushPendingNativeKeyboardAction()
@@ -325,6 +384,8 @@ public final class GTK2Renderer: @unchecked Sendable {
 
         if pendingRebuild && !idleRebuildScheduled {
             scheduleRebuild()
+        } else {
+            scheduleAdjacentPagerPrerenderIfNeeded()
         }
     }
 
@@ -415,6 +476,175 @@ public final class GTK2Renderer: @unchecked Sendable {
         if didMutate {
             KindleDevice.shared.performAutomaticRefresh()
         }
+        syncActiveStateToCurrentSlot()
+        return true
+    }
+
+    internal func syncActiveStateToCurrentSlot() {
+        guard let idx = activeSlotIndex, mountedSlots.indices.contains(idx), let tree = mountedTree else { return }
+        mountedSlots[idx].tree = tree
+        mountedSlots[idx].labels = mountedLabels
+        mountedSlots[idx].progressBars = mountedProgressBars
+        mountedSlots[idx].signalTargets = activeSignalTargets
+        mountedSlots[idx].targetPaths = activeTargetPaths
+        mountedSlots[idx].isPrerendered = true
+    }
+
+    private func leastRecentlyUsedInactiveSlotIndex(excluding excludedIdx: Int?) -> Int? {
+        var bestIdx: Int? = nil
+        var bestOrder: UInt64 = .max
+        for (idx, slot) in mountedSlots.enumerated() where idx != excludedIdx {
+            if slot.lastUsedOrder < bestOrder {
+                bestOrder = slot.lastUsedOrder
+                bestIdx = idx
+            }
+        }
+        return bestIdx
+    }
+
+    internal func treeContainsWebView(_ node: RenderNode) -> Bool {
+        if case .webView = node { return true }
+        return node.renderChildren.contains { treeContainsWebView($0) }
+    }
+
+    internal func clearAllMountedSlots(rootContainer: KWidgetRef) {
+        kgtk_container_clear(rootContainer)
+        mountedSlots.removeAll(keepingCapacity: true)
+        activeSlotIndex = nil
+    }
+
+    internal func activateCachedSlotIfAvailable(
+        _ tree: RenderNode,
+        rootBg: EInkColor,
+        window: KWidgetRef,
+        requireExactTextMatch: Bool
+    ) -> Bool {
+        guard let rootContainer = rootContainer,
+              mountedTheme == KindleTheme.current,
+              mountedKeyboardVisible == KindleKeyboardManager.shared.isVisible,
+              !treeContainsWebView(tree)
+        else { return false }
+
+        var texts: [(text: String, markup: String?)] = []
+        var bars: [(fraction: Double, text: String?)] = []
+        let hasVolatileContent = tree.collectLiveContent(texts: &texts, progressBars: &bars)
+        guard !hasVolatileContent else { return false }
+
+        syncActiveStateToCurrentSlot()
+
+        var matchedIdx: Int? = nil
+        for (idx, slot) in mountedSlots.enumerated() where idx != activeSlotIndex {
+            guard slot.theme == KindleTheme.current,
+                  slot.keyboardVisible == KindleKeyboardManager.shared.isVisible,
+                  slot.labels.count == texts.count,
+                  slot.progressBars.count == bars.count,
+                  slot.tree.isStructurallyEqual(to: tree)
+            else { continue }
+
+            var stampsValid = true
+            for entry in slot.imageStamps where FileStamp(path: entry.path) != entry.stamp {
+                stampsValid = false
+                break
+            }
+            guard stampsValid else { continue }
+
+            if requireExactTextMatch {
+                var exactMatch = true
+                for i in 0..<texts.count {
+                    if slot.labels[i].text != texts[i].text || slot.labels[i].markup != texts[i].markup {
+                        exactMatch = false
+                        break
+                    }
+                }
+                if exactMatch {
+                    for i in 0..<bars.count {
+                        if abs(slot.progressBars[i].fraction - bars[i].fraction) > 0.0001 || slot.progressBars[i].text != bars[i].text {
+                            exactMatch = false
+                            break
+                        }
+                    }
+                }
+                if !exactMatch { continue }
+            }
+
+            matchedIdx = idx
+            break
+        }
+
+        guard let targetIdx = matchedIdx else { return false }
+
+        let savedTargets = activeSignalTargets
+        let savedPaths = activeTargetPaths
+        activeSignalTargets = mountedSlots[targetIdx].signalTargets
+        activeTargetPaths = mountedSlots[targetIdx].targetPaths
+        guard retargetHandlers(to: tree) else {
+            activeSignalTargets = savedTargets
+            activeTargetPaths = savedPaths
+            return false
+        }
+
+        let prevSlotIndex = activeSlotIndex
+        let slot = mountedSlots[targetIdx]
+
+        kgtk_window_freeze_updates(window)
+        _ = kgtk_take_suppressed_redraw_widget()
+        kgtk_widget_modify_bg_gray(window, 0, rootBg.grayLevel)
+        kgtk_widget_modify_bg_gray(rootContainer, 0, rootBg.grayLevel)
+
+        if let prevIdx = prevSlotIndex, mountedSlots.indices.contains(prevIdx) {
+            kgtk_widget_set_visible(mountedSlots[prevIdx].rootWidget, false)
+        }
+
+        mountedTree = tree
+        mountedTheme = slot.theme
+        mountedKeyboardVisible = slot.keyboardVisible
+        mountedImageStamps = slot.imageStamps
+        mountedLabels = slot.labels
+        mountedProgressBars = slot.progressBars
+        activeSlotIndex = targetIdx
+
+        if !requireExactTextMatch {
+            for i in 0..<texts.count {
+                let (newText, newMarkup) = texts[i]
+                guard newText != mountedLabels[i].text || newMarkup != mountedLabels[i].markup else { continue }
+                mountedLabels[i].text = newText
+                mountedLabels[i].markup = newMarkup
+                if let markup = newMarkup {
+                    markup.withCString { kgtk_label_set_markup(mountedLabels[i].widget, $0) }
+                } else {
+                    newText.withCString { kgtk_label_set_text(mountedLabels[i].widget, $0) }
+                }
+            }
+            for i in 0..<bars.count {
+                let (newFraction, newText) = bars[i]
+                if abs(newFraction - mountedProgressBars[i].fraction) > 0.0001 {
+                    mountedProgressBars[i].fraction = newFraction
+                    if case .progressBar(_, let fg, let bg, let track) = mountedProgressBars[i].barTarget.kind {
+                        mountedProgressBars[i].barTarget.kind = .progressBar(
+                            fraction: min(1.0, max(0.0, newFraction)),
+                            fgGray: fg,
+                            bgGray: bg,
+                            trackGray: track
+                        )
+                    }
+                    kgtk_widget_queue_draw(mountedProgressBars[i].barWidget)
+                }
+                if let label = mountedProgressBars[i].labelWidget,
+                   let text = newText, !text.isEmpty,
+                   text != mountedProgressBars[i].text {
+                    mountedProgressBars[i].text = text
+                    text.withCString { kgtk_label_set_text(label, $0) }
+                }
+            }
+        }
+
+        slotUsageCounter &+= 1
+        mountedSlots[targetIdx].lastUsedOrder = slotUsageCounter
+        mountedSlots[targetIdx].isPrerendered = true
+        syncActiveStateToCurrentSlot()
+        kgtk_set_active_scrolled_windows(slot.primaryScrolledWindow, slot.modalScrolledWindow)
+        kgtk_widget_set_visible(slot.rootWidget, true)
+        kgtk_flush_updates(window)
         return true
     }
 
@@ -458,26 +688,35 @@ public final class GTK2Renderer: @unchecked Sendable {
     }
 
     internal func extractRootBackground(from node: RenderNode) -> EInkColor? {
-        if let s = nodeStyle(node), s.isHidden {
-            return nil
-        }
-
-        switch node {
-        case .vstack(_, _, let children, let style),
-             .hstack(_, _, let children, let style),
-             .zstack(_, let children, let style):
-            return style.backgroundColor ?? children.first.flatMap { extractRootBackground(from: $0) }
-        case .scrollView(_, let child, let style),
-             .card(_, let child, let style):
-            return style.backgroundColor ?? extractRootBackground(from: child)
-        default:
-            return nil
-        }
+        node.extractedRootBackground
     }
 
     /// Mounts `effectiveTree` (already wrapped by `KindleKeyboardManager.wrapWithKeyboardOverlayIfNeeded`).
     internal func mountTree(_ effectiveTree: RenderNode, rootBg: EInkColor) {
         guard let rootContainer = rootContainer else { return }
+
+        let hasWebView = treeContainsWebView(effectiveTree) || mountedSlots.contains { treeContainsWebView($0.tree) }
+        if hasWebView || (mountedTheme != nil && (mountedTheme != KindleTheme.current || mountedKeyboardVisible != KindleKeyboardManager.shared.isVisible)) {
+            clearAllMountedSlots(rootContainer: rootContainer)
+        } else {
+            syncActiveStateToCurrentSlot()
+            if let prevIdx = activeSlotIndex, mountedSlots.indices.contains(prevIdx) {
+                kgtk_widget_set_visible(mountedSlots[prevIdx].rootWidget, false)
+            }
+            if mountedSlots.count >= maxCachedSlots {
+                if let evictIdx = leastRecentlyUsedInactiveSlotIndex(excluding: activeSlotIndex) {
+                    let evicted = mountedSlots.remove(at: evictIdx)
+                    kgtk_widget_destroy(evicted.rootWidget)
+                    if let curIdx = activeSlotIndex, evictIdx < curIdx {
+                        activeSlotIndex = curIdx - 1
+                    }
+                }
+            }
+            kgtk_prepare_slot_mount()
+        }
+
+        activeSignalTargets.removeAll(keepingCapacity: true)
+        activeTargetPaths.removeAll(keepingCapacity: true)
         mountedLabels.removeAll(keepingCapacity: true)
         mountedProgressBars.removeAll(keepingCapacity: true)
         mountedImageStamps.removeAll(keepingCapacity: true)
@@ -491,13 +730,311 @@ public final class GTK2Renderer: @unchecked Sendable {
             controlSize: nil,
             isDisabled: false
         )
+        var builtRoot: KWidgetRef? = nil
         if let childWidget = buildWidget(for: effectiveTree, context: initialContext) {
             kgtk_widget_show_all(childWidget)
             kgtk_box_pack_start(rootContainer, childWidget, true, true, 0)
+            builtRoot = childWidget
         }
         mountedTree = effectiveTree
         mountedTheme = KindleTheme.current
         mountedKeyboardVisible = KindleKeyboardManager.shared.isVisible
+
+        if let builtRoot = builtRoot {
+            var primarySW: KWidgetRef? = nil
+            var modalSW: KWidgetRef? = nil
+            kgtk_get_active_scrolled_windows(&primarySW, &modalSW)
+            slotUsageCounter &+= 1
+            let newSlot = MountedSlot(
+                rootWidget: builtRoot,
+                tree: effectiveTree,
+                theme: KindleTheme.current,
+                keyboardVisible: KindleKeyboardManager.shared.isVisible,
+                imageStamps: mountedImageStamps,
+                labels: mountedLabels,
+                progressBars: mountedProgressBars,
+                signalTargets: activeSignalTargets,
+                targetPaths: activeTargetPaths,
+                primaryScrolledWindow: primarySW,
+                modalScrolledWindow: modalSW,
+                isPrerendered: true,
+                lastUsedOrder: slotUsageCounter
+            )
+            mountedSlots.append(newSlot)
+            activeSlotIndex = mountedSlots.count - 1
+        }
+    }
+
+    // MARK: - Idle Offscreen Pager Pre-Rendering
+
+    internal func scheduleAdjacentPagerPrerenderIfNeeded() {
+        guard KindleStateRegistry.shared.activeModalOverlays.allSatisfy({ $0.isFullScreen }),
+              let pager = KindleStateRegistry.shared.lastRenderedPagerState,
+              pager.totalPages > 1
+        else {
+            pendingPrerenderPages.removeAll()
+            return
+        }
+        var queue: [(scopeKey: String, pageIndex: Int)] = []
+        if pager.currentIndex + 1 < pager.totalPages {
+            queue.append((scopeKey: pager.scopeKey, pageIndex: pager.currentIndex + 1))
+        }
+        if pager.currentIndex - 1 >= 0 {
+            queue.append((scopeKey: pager.scopeKey, pageIndex: pager.currentIndex - 1))
+        }
+        pendingPrerenderPages = queue
+        if !pendingPrerenderPages.isEmpty {
+            let selfPtr = Unmanaged.passUnretained(self).toOpaque()
+            kgtk_schedule_low_priority_idle(gtkLowPriorityPrerenderTrampoline, selfPtr)
+        }
+    }
+
+    internal func prerenderNextPagerPageIfIdle() {
+        guard !isRebuilding,
+              !pendingRebuild,
+              !kgtk_is_slider_dragging(),
+              let window = window,
+              let rootContainer = rootContainer,
+              !pendingPrerenderPages.isEmpty
+        else { return }
+
+        let target = pendingPrerenderPages.removeFirst()
+        let rawTree = KindleStateRegistry.shared.evaluateSpeculativeTree(pagerOverride: target, makeTree)
+
+        let candidateTree = KindleKeyboardManager.shared.wrapWithKeyboardOverlayIfNeeded(rawTree)
+        guard !treeContainsWebView(candidateTree) else { return }
+
+        var texts: [(text: String, markup: String?)] = []
+        var bars: [(fraction: Double, text: String?)] = []
+        let hasVolatileContent = candidateTree.collectLiveContent(texts: &texts, progressBars: &bars)
+        guard !hasVolatileContent else { return }
+
+        // 1. Check if an existing slot already has the exact text/markup for this candidate page
+        for (idx, slot) in mountedSlots.enumerated() where idx != activeSlotIndex {
+            guard slot.theme == KindleTheme.current,
+                  slot.keyboardVisible == KindleKeyboardManager.shared.isVisible,
+                  slot.labels.count == texts.count,
+                  slot.progressBars.count == bars.count,
+                  slot.tree.isStructurallyEqual(to: candidateTree)
+            else { continue }
+            var stampsValid = true
+            for entry in slot.imageStamps where FileStamp(path: entry.path) != entry.stamp {
+                stampsValid = false
+                break
+            }
+            guard stampsValid else { continue }
+            var exact = true
+            for i in 0..<texts.count {
+                if slot.labels[i].text != texts[i].text || slot.labels[i].markup != texts[i].markup {
+                    exact = false
+                    break
+                }
+            }
+            if exact {
+                for i in 0..<bars.count {
+                    if abs(slot.progressBars[i].fraction - bars[i].fraction) > 0.0001 || slot.progressBars[i].text != bars[i].text {
+                        exact = false
+                        break
+                    }
+                }
+            }
+            if exact {
+                slotUsageCounter &+= 1
+                mountedSlots[idx].lastUsedOrder = slotUsageCounter
+                if !slot.isPrerendered {
+                    let labelWidgets: [KWidgetRef?] = slot.labels.map { $0.widget }
+                    labelWidgets.withUnsafeBufferPointer { buf in
+                        kgtk_prerender_offscreen_slot(window, rootContainer, slot.rootWidget, buf.baseAddress, Int32(buf.count))
+                    }
+                    mountedSlots[idx].isPrerendered = true
+                }
+                if !pendingPrerenderPages.isEmpty && !pendingRebuild {
+                    let selfPtr = Unmanaged.passUnretained(self).toOpaque()
+                    kgtk_schedule_low_priority_idle(gtkLowPriorityPrerenderTrampoline, selfPtr)
+                }
+                return
+            }
+        }
+
+        // 2. If we have at least 3 slots (active + prev + stale) and the LRU inactive slot is structurally identical,
+        // reuse that slot in-place without creating or destroying any GTK widgets!
+        if mountedSlots.count >= 3,
+           let reuseIdx = leastRecentlyUsedInactiveSlotIndex(excluding: activeSlotIndex) {
+            let slot = mountedSlots[reuseIdx]
+            var stampsValid = true
+            for entry in slot.imageStamps where FileStamp(path: entry.path) != entry.stamp {
+                stampsValid = false
+                break
+            }
+            if stampsValid,
+               slot.theme == KindleTheme.current,
+               slot.keyboardVisible == KindleKeyboardManager.shared.isVisible,
+               slot.labels.count == texts.count,
+               slot.progressBars.count == bars.count,
+               slot.tree.isStructurallyEqual(to: candidateTree) {
+                let savedTargets = activeSignalTargets
+                let savedPaths = activeTargetPaths
+                activeSignalTargets = slot.signalTargets
+                activeTargetPaths = slot.targetPaths
+                let retargeted = retargetHandlers(to: candidateTree)
+                let updatedTargets = activeSignalTargets
+                activeSignalTargets = savedTargets
+                activeTargetPaths = savedPaths
+
+                if retargeted {
+                    var updatedLabels = slot.labels
+                    for i in 0..<texts.count {
+                        let (newText, newMarkup) = texts[i]
+                        guard newText != updatedLabels[i].text || newMarkup != updatedLabels[i].markup else { continue }
+                        updatedLabels[i].text = newText
+                        updatedLabels[i].markup = newMarkup
+                        if let markup = newMarkup {
+                            markup.withCString { kgtk_label_set_markup(updatedLabels[i].widget, $0) }
+                        } else {
+                            newText.withCString { kgtk_label_set_text(updatedLabels[i].widget, $0) }
+                        }
+                    }
+                    var updatedBars = slot.progressBars
+                    for i in 0..<bars.count {
+                        let (newFraction, newText) = bars[i]
+                        if abs(newFraction - updatedBars[i].fraction) > 0.0001 {
+                            updatedBars[i].fraction = newFraction
+                            if case .progressBar(_, let fg, let bg, let track) = updatedBars[i].barTarget.kind {
+                                updatedBars[i].barTarget.kind = .progressBar(
+                                    fraction: min(1.0, max(0.0, newFraction)),
+                                    fgGray: fg,
+                                    bgGray: bg,
+                                    trackGray: track
+                                )
+                            }
+                            kgtk_widget_queue_draw(updatedBars[i].barWidget)
+                        }
+                        if let label = updatedBars[i].labelWidget,
+                           let text = newText, !text.isEmpty,
+                           text != updatedBars[i].text {
+                            updatedBars[i].text = text
+                            text.withCString { kgtk_label_set_text(label, $0) }
+                        }
+                    }
+                    let labelWidgets: [KWidgetRef?] = updatedLabels.map { $0.widget }
+                    labelWidgets.withUnsafeBufferPointer { buf in
+                        kgtk_prerender_offscreen_slot(window, rootContainer, slot.rootWidget, buf.baseAddress, Int32(buf.count))
+                    }
+                    slotUsageCounter &+= 1
+                    mountedSlots[reuseIdx].tree = candidateTree
+                    mountedSlots[reuseIdx].labels = updatedLabels
+                    mountedSlots[reuseIdx].progressBars = updatedBars
+                    mountedSlots[reuseIdx].signalTargets = updatedTargets
+                    mountedSlots[reuseIdx].isPrerendered = true
+                    mountedSlots[reuseIdx].lastUsedOrder = slotUsageCounter
+                    if !pendingPrerenderPages.isEmpty && !pendingRebuild {
+                        let selfPtr = Unmanaged.passUnretained(self).toOpaque()
+                        kgtk_schedule_low_priority_idle(gtkLowPriorityPrerenderTrampoline, selfPtr)
+                    }
+                    return
+                }
+            }
+        }
+
+        let rootBg = extractRootBackground(from: rawTree) ?? KindleTheme.current.background
+        mountOffscreenSlot(candidateTree, rootBg: rootBg, window: window, rootContainer: rootContainer)
+
+        if !pendingPrerenderPages.isEmpty && !pendingRebuild {
+            let selfPtr = Unmanaged.passUnretained(self).toOpaque()
+            kgtk_schedule_low_priority_idle(gtkLowPriorityPrerenderTrampoline, selfPtr)
+        }
+    }
+
+    private func mountOffscreenSlot(
+        _ candidateTree: RenderNode,
+        rootBg: EInkColor,
+        window: KWidgetRef,
+        rootContainer: KWidgetRef
+    ) {
+        syncActiveStateToCurrentSlot()
+
+        let savedTree = mountedTree
+        let savedTheme = mountedTheme
+        let savedKB = mountedKeyboardVisible
+        let savedStamps = mountedImageStamps
+        let savedLabels = mountedLabels
+        let savedBars = mountedProgressBars
+        let savedTargets = activeSignalTargets
+        let savedPaths = activeTargetPaths
+        var savedPrimarySW: KWidgetRef? = nil
+        var savedModalSW: KWidgetRef? = nil
+        kgtk_get_active_scrolled_windows(&savedPrimarySW, &savedModalSW)
+
+        if mountedSlots.count >= maxCachedSlots {
+            if let evictIdx = leastRecentlyUsedInactiveSlotIndex(excluding: activeSlotIndex) {
+                let evicted = mountedSlots.remove(at: evictIdx)
+                kgtk_widget_destroy(evicted.rootWidget)
+                if let curIdx = activeSlotIndex, evictIdx < curIdx {
+                    activeSlotIndex = curIdx - 1
+                }
+            }
+        }
+
+        kgtk_prepare_slot_mount()
+        activeSignalTargets = []
+        activeTargetPaths = []
+        mountedLabels = []
+        mountedProgressBars = []
+        mountedImageStamps = []
+        currentBuildPath = []
+
+        let initialContext = RenderContext(
+            font: .body,
+            fg: KindleTheme.current.foreground,
+            bg: rootBg,
+            buttonStyle: nil,
+            toggleStyle: nil,
+            controlSize: nil,
+            isDisabled: false
+        )
+
+        if let childWidget = buildWidget(for: candidateTree, context: initialContext) {
+            kgtk_widget_show_all(childWidget)
+            kgtk_widget_set_visible(childWidget, false)
+            kgtk_box_pack_start(rootContainer, childWidget, true, true, 0)
+            let labelWidgets: [KWidgetRef?] = mountedLabels.map { $0.widget }
+            labelWidgets.withUnsafeBufferPointer { buf in
+                kgtk_prerender_offscreen_slot(window, rootContainer, childWidget, buf.baseAddress, Int32(buf.count))
+            }
+
+            var slotPrimarySW: KWidgetRef? = nil
+            var slotModalSW: KWidgetRef? = nil
+            kgtk_get_active_scrolled_windows(&slotPrimarySW, &slotModalSW)
+            slotUsageCounter &+= 1
+
+            let offscreenSlot = MountedSlot(
+                rootWidget: childWidget,
+                tree: candidateTree,
+                theme: KindleTheme.current,
+                keyboardVisible: KindleKeyboardManager.shared.isVisible,
+                imageStamps: mountedImageStamps,
+                labels: mountedLabels,
+                progressBars: mountedProgressBars,
+                signalTargets: activeSignalTargets,
+                targetPaths: activeTargetPaths,
+                primaryScrolledWindow: slotPrimarySW,
+                modalScrolledWindow: slotModalSW,
+                isPrerendered: true,
+                lastUsedOrder: slotUsageCounter
+            )
+            mountedSlots.append(offscreenSlot)
+        }
+
+        // Restore active slot state
+        mountedTree = savedTree
+        mountedTheme = savedTheme
+        mountedKeyboardVisible = savedKB
+        mountedImageStamps = savedStamps
+        mountedLabels = savedLabels
+        mountedProgressBars = savedBars
+        activeSignalTargets = savedTargets
+        activeTargetPaths = savedPaths
+        kgtk_set_active_scrolled_windows(savedPrimarySW, savedModalSW)
     }
 
     internal func makeGestureHandler(for style: ViewStyle) -> GTKSignalTarget.Handler {
@@ -712,6 +1249,7 @@ public final class GTK2Renderer: @unchecked Sendable {
                 if let lbl = title.uppercased().withCString({ kgtk_label_new($0) }) {
                     kgtk_label_set_line_wrap(lbl, false)
                     kgtk_misc_set_alignment(lbl, 0.0, 0.5)
+                    kgtk_label_set_bg_gray(lbl, childCtx.bg.grayLevel)
                     KindleFont.system(size: 14, weight: .bold).pangoDescription.withCString {
                         kgtk_widget_set_font_and_fg(lbl, $0, true, theme.mutedForeground.grayLevel)
                     }
@@ -740,9 +1278,16 @@ public final class GTK2Renderer: @unchecked Sendable {
             let initialFgGray = context.blend(baseFg, localOpacity: style.opacity, against: targetBg).grayLevel
             mountedLabels.append((widget: label, text: content, markup: style.pangoMarkup, fgGray: initialFgGray))
             kgtk_label_set_line_wrap(label, wrap)
-            kgtk_misc_set_alignment(label, wrap ? 0.0 : alignment.gtkAlign, wrap ? 0.0 : 0.5)
+            if let maxLines = style.lineLimit, maxLines > 0 {
+                kgtk_label_set_max_lines(label, Int32(maxLines))
+            }
+            let effectiveHAlign: HorizontalAlignment = (alignment != .leading)
+                ? alignment
+                : (style.alignment?.horizontal ?? alignment)
+            let effectiveVAlign: Float = style.alignment?.vertical.gtkAlign ?? (wrap ? 0.0 : 0.5)
+            kgtk_misc_set_alignment(label, effectiveHAlign.gtkAlign, effectiveVAlign)
             let justify: Int32
-            switch alignment {
+            switch effectiveHAlign {
             case .leading:  justify = 0 // GTK_JUSTIFY_LEFT
             case .trailing: justify = 1 // GTK_JUSTIFY_RIGHT
             case .center:   justify = 2 // GTK_JUSTIFY_CENTER
@@ -835,11 +1380,16 @@ public final class GTK2Renderer: @unchecked Sendable {
             let fg = (style.tintColor ?? style.foregroundColor ?? context.fg ?? theme.foreground).grayLevel
             let bg = (style.backgroundColor ?? context.bg).grayLevel
             let track = theme.panelBackground.grayLevel
+            let isEnabled = !context.isBehindModal && !context.isDisabled && !style.isDisabled
 
-            let target = GTKSignalTarget(.sliderChange(onValueChange))
-            registerTarget(target)
-            let valPtr = Unmanaged.passUnretained(target).toOpaque()
-            let selfPtr = Unmanaged.passUnretained(self).toOpaque()
+            var valPtr: UnsafeMutableRawPointer? = nil
+            var selfPtr: UnsafeMutableRawPointer? = nil
+            if isEnabled {
+                let target = GTKSignalTarget(.sliderChange(onValueChange))
+                registerTarget(target)
+                valPtr = Unmanaged.passUnretained(target).toOpaque()
+                selfPtr = Unmanaged.passUnretained(self).toOpaque()
+            }
 
             guard let slider = kgtk_custom_slider_new(
                 value,
@@ -876,6 +1426,7 @@ public final class GTK2Renderer: @unchecked Sendable {
                     headerLbl = lbl
                     kgtk_label_set_line_wrap(lbl, false)
                     kgtk_misc_set_alignment(lbl, 0.0, 0.5)
+                    kgtk_label_set_bg_gray(lbl, bg)
                     let f = style.font ?? context.font ?? .caption
                     f.pangoDescription.withCString { kgtk_widget_set_font_and_fg(lbl, $0, true, fg) }
                     kgtk_box_pack_start(vbox, lbl, false, true, 0)
@@ -903,8 +1454,8 @@ public final class GTK2Renderer: @unchecked Sendable {
             return applyStyle(style, to: box, context: context)
 
         case .image(let path, _, let style):
-            let maxW = Int32(style.width ?? -1)
-            let maxH = Int32(style.height ?? -1)
+            let maxW = Int32(style.width ?? style.maxWidth ?? -1)
+            let maxH = Int32(style.height ?? style.maxHeight ?? -1)
             mountedImageStamps.append((path: path, stamp: FileStamp(path: path)))
             guard let img = path.withCString({ kgtk_image_new_from_file_scaled($0, maxW, maxH) }) else { return nil }
             var imgStyle = style

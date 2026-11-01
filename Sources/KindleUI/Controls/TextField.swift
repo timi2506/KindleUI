@@ -168,6 +168,15 @@ public final class KindleKeyboardManager: @unchecked Sendable {
         isVisible && activeFieldID == id
     }
 
+    internal func performWithAutoDismiss(_ body: () -> Void) {
+        let kbWasVisible = isVisible
+        let genBefore = interactionGeneration
+        body()
+        if kbWasVisible && isVisible && interactionGeneration == genBefore {
+            dismiss()
+        }
+    }
+
     internal func beginRenderPass() {
         fallbackOnUpdate = nil
         fallbackOnSubmit = nil

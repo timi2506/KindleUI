@@ -44,7 +44,7 @@ extension RawRepresentable where Self: AppStorageConvertible, RawValue: AppStora
     }
 }
 
-/// A property wrapper that reflects a persistent value on disk (`/mnt/us/extensions/kindleui_storage.json`)
+/// A property wrapper that reflects a persistent value on disk (`<appDataDirectory>/storage.json`)
 /// and invalidates the view whenever the value changes.
 @propertyWrapper
 public struct AppStorage<Value: AppStorageConvertible>: @unchecked Sendable {
@@ -80,31 +80,20 @@ public struct AppStorage<Value: AppStorageConvertible>: @unchecked Sendable {
 /// A property wrapper that reads and writes per-scene persistent state backed by `KindleStateRegistry`.
 @propertyWrapper
 public struct SceneStorage<Value: AppStorageConvertible>: @unchecked Sendable {
-    public let key: String
-    public let defaultValue: Value
+    private let storage: AppStorage<Value>
+    public var key: String { storage.key }
+    public var defaultValue: Value { storage.defaultValue }
 
     public init(wrappedValue: Value, _ key: String) {
-        self.key = "scene.\(key)"
-        self.defaultValue = wrappedValue
+        self.storage = AppStorage(wrappedValue: wrappedValue, "scene.\(key)")
     }
 
     public var wrappedValue: Value {
-        get {
-            guard let raw = KindleStateRegistry.shared.appStorageValue(forKey: key),
-                  let decoded = Value.fromAppStorageString(raw) else {
-                return defaultValue
-            }
-            return decoded
-        }
-        nonmutating set {
-            KindleStateRegistry.shared.setAppStorageValue(newValue.toAppStorageString(), forKey: key)
-        }
+        get { storage.wrappedValue }
+        nonmutating set { storage.wrappedValue = newValue }
     }
 
     public var projectedValue: Binding<Value> {
-        Binding(
-            get: { self.wrappedValue },
-            set: { self.wrappedValue = $0 }
-        )
+        storage.projectedValue
     }
 }

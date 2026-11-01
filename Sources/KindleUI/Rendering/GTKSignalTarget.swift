@@ -63,11 +63,8 @@ internal func gtkClickedTrampoline(widget: KWidgetRef?, userData: UnsafeMutableR
     let target = Unmanaged<GTKSignalTarget>.fromOpaque(userData).takeUnretainedValue()
     withExtendedLifetime(target) {
         if case .tap(let action) = target.handler {
-            let kbWasVisible = KindleKeyboardManager.shared.isVisible
-            let genBefore = KindleKeyboardManager.shared.interactionGeneration
-            action()
-            if kbWasVisible && KindleKeyboardManager.shared.isVisible && KindleKeyboardManager.shared.interactionGeneration == genBefore {
-                KindleKeyboardManager.shared.dismiss()
+            KindleKeyboardManager.shared.performWithAutoDismiss {
+                action()
             }
         }
     }
@@ -114,27 +111,30 @@ internal func gtkGestureTrampoline(gestureType: Int32, dx: Int32, dy: Int32, use
             let onDragEnded,
             let onDragReleaseFlush
         ) = target.handler {
-            let kbWasVisible = KindleKeyboardManager.shared.isVisible
-            let genBefore = KindleKeyboardManager.shared.interactionGeneration
-            switch gestureType {
-            case 1: onTap?()
-            case 2: onLongPress?()
-            case 3: onLeft?()
-            case 4: onRight?()
-            case 5: onUp?()
-            case 6: onDown?()
-            case 10:
-                onDragChanged?(target.dragStartX, target.dragStartY, Int(dx), Int(dy))
-            case 11:
-                onDragEnded?(target.dragStartX, target.dragStartY, Int(dx), Int(dy))
-                onDragReleaseFlush?()
-            case 12:
-                target.dragStartX = Int(dx)
-                target.dragStartY = Int(dy)
-            default: break
+            let shouldCheckDismiss = (1...6).contains(gestureType)
+            let runGesture = {
+                switch gestureType {
+                case 1: onTap?()
+                case 2: onLongPress?()
+                case 3: onLeft?()
+                case 4: onRight?()
+                case 5: onUp?()
+                case 6: onDown?()
+                case 10:
+                    onDragChanged?(target.dragStartX, target.dragStartY, Int(dx), Int(dy))
+                case 11:
+                    onDragEnded?(target.dragStartX, target.dragStartY, Int(dx), Int(dy))
+                    onDragReleaseFlush?()
+                case 12:
+                    target.dragStartX = Int(dx)
+                    target.dragStartY = Int(dy)
+                default: break
+                }
             }
-            if (1...6).contains(gestureType) && kbWasVisible && KindleKeyboardManager.shared.isVisible && KindleKeyboardManager.shared.interactionGeneration == genBefore {
-                KindleKeyboardManager.shared.dismiss()
+            if shouldCheckDismiss {
+                KindleKeyboardManager.shared.performWithAutoDismiss(runGesture)
+            } else {
+                runGesture()
             }
         }
     }
@@ -243,6 +243,12 @@ internal func gtkIdleRebuildTrampoline(userData: UnsafeMutableRawPointer?) {
     renderer.performScheduledRebuild()
 }
 
+internal func gtkLowPriorityPrerenderTrampoline(userData: UnsafeMutableRawPointer?) {
+    guard let userData = userData else { return }
+    let renderer = Unmanaged<GTK2Renderer>.fromOpaque(userData).takeUnretainedValue()
+    renderer.prerenderNextPagerPageIfIdle()
+}
+
 internal func gtkScaleDragEndTrampoline(userData: UnsafeMutableRawPointer?) {
     guard let userData = userData else { return }
     let renderer = Unmanaged<GTK2Renderer>.fromOpaque(userData).takeUnretainedValue()
@@ -261,15 +267,32 @@ internal func gtkWebViewLoadFinishedTrampoline(userData: UnsafeMutableRawPointer
     KindleDevice.shared.performAutomaticRefresh()
 }
 
-/// Inherited styling context propagated down the view hierarchy during GTK widget construction.
+/// Resolved palette, typography, and padding for a button rendered in `GTK2Renderer` or `KindlePreviewServer`.
+internal struct ResolvedButtonVisuals {
+    let role: KindleButtonStyle
+    let controlSize: KindleControlSize
+    let isDisabled: Bool
+    let effectiveBg: EInkColor?
+    let effectiveFg: EInkColor
+    let effectiveBorderColor: EInkColor
+    let effectiveBorderWidth: Int
+    let effectiveRadius: Int
+    let effectiveShadow: KindleShadow?
+    let effectiveFont: KindleFont
+    let innerPad: EdgeInsets
+    let outerPad: EdgeInsets?
+    let childCtx: RenderContext
+}
+
+/// Inherited styling context propagated down the view hierarchy during GTK widget and HTML preview construction.
 internal struct RenderContext {
-    var font: KindleFont?
-    var fg: EInkColor?
-    var bg: EInkColor
+    var font: KindleFont? = .body
+    var fg: EInkColor? = nil
+    var bg: EInkColor = .white
     var opacity: Double = 1.0
-    var buttonStyle: KindleButtonStyle?
-    var toggleStyle: KindleToggleStyle?
-    var controlSize: KindleControlSize?
+    var buttonStyle: KindleButtonStyle? = nil
+    var toggleStyle: KindleToggleStyle? = nil
+    var controlSize: KindleControlSize? = nil
     var isDisabled: Bool = false
     var isBehindModal: Bool = false
 
@@ -280,8 +303,8 @@ internal struct RenderContext {
     func blend(_ color: EInkColor, localOpacity: Double = 1.0, against customBg: EInkColor? = nil) -> EInkColor {
         let alpha = effectiveOpacity(localOpacity)
         guard alpha < 0.999 else { return color }
-        let bgGray = Double((customBg ?? self.bg).grayLevel)
-        let fgGray = Double(color.grayLevel)
+        let bgGray = Double((customBg ?? self.bg).monochromeGrayLevel)
+        let fgGray = Double(color.monochromeGrayLevel)
         let blended = UInt8(max(0.0, min(255.0, (fgGray * alpha + bgGray * (1.0 - alpha)).rounded())))
         return EInkColor(grayLevel: blended)
     }
@@ -299,5 +322,115 @@ internal struct RenderContext {
         if let cs = style.controlSize { next.controlSize = cs }
         if style.isDisabled { next.isDisabled = true }
         return next
+    }
+
+    func resolveButtonVisuals(
+        style: ViewStyle,
+        theme: KindleTheme = .current,
+        isDisabledOverride: Bool? = nil
+    ) -> ResolvedButtonVisuals {
+        let role = style.buttonStyle ?? self.buttonStyle ?? .automatic
+        let controlSize = style.controlSize ?? self.controlSize ?? .regular
+        let isDisabled = isDisabledOverride ?? (style.isDisabled || self.isDisabled)
+
+        let defaultBg: EInkColor?
+        let defaultFg: EInkColor
+        let defaultBorderColor: EInkColor
+        let defaultBorderWidth: Int
+        let defaultRadius: Int
+        let defaultShadow: KindleShadow? = nil
+
+        switch role {
+        case .automatic, .bordered:
+            defaultBg = theme.cardBackground
+            defaultFg = isDisabled ? theme.mutedForeground : theme.foreground
+            defaultBorderColor = isDisabled ? theme.subtleBorder : theme.border
+            defaultBorderWidth = 1
+            defaultRadius = 16
+
+        case .unbordered:
+            defaultBg = theme.panelBackground
+            defaultFg = isDisabled ? theme.mutedForeground : theme.foreground
+            defaultBorderColor = theme.panelBackground
+            defaultBorderWidth = 0
+            defaultRadius = 16
+
+        case .borderedProminent:
+            defaultBg = isDisabled ? theme.panelBackground : (style.tintColor ?? theme.foreground)
+            defaultFg = isDisabled ? theme.mutedForeground : theme.background
+            defaultBorderColor = isDisabled ? theme.subtleBorder : (style.tintColor ?? theme.border)
+            defaultBorderWidth = 1
+            defaultRadius = 16
+
+        case .capsule:
+            defaultBg = theme.panelBackground
+            defaultFg = isDisabled ? theme.mutedForeground : theme.foreground
+            defaultBorderColor = theme.subtleBorder
+            defaultBorderWidth = 1
+            defaultRadius = 999
+
+        case .card:
+            defaultBg = theme.cardBackground
+            defaultFg = isDisabled ? theme.mutedForeground : theme.foreground
+            defaultBorderColor = theme.subtleBorder
+            defaultBorderWidth = 1
+            defaultRadius = 18
+
+        case .plain, .borderless:
+            defaultBg = nil
+            defaultFg = isDisabled ? theme.mutedForeground : (style.tintColor ?? theme.foreground)
+            defaultBorderColor = theme.border
+            defaultBorderWidth = 0
+            defaultRadius = 14
+        }
+
+        let rawBg = style.backgroundColor ?? defaultBg
+        let effectiveBg = rawBg.map { self.blend($0, localOpacity: style.opacity) }
+        let effectiveFg = self.blend(
+            style.foregroundColor ?? defaultFg,
+            localOpacity: style.opacity,
+            against: effectiveBg ?? self.bg
+        )
+        let effectiveBorderColor = self.blend(style.borderColor ?? defaultBorderColor, localOpacity: style.opacity)
+        let effectiveBorderWidth = style.borderWidth > 0 ? style.borderWidth : defaultBorderWidth
+        let effectiveRadius = style.cornerRadius ?? defaultRadius
+        let effectiveShadow = style.shadow ?? defaultShadow
+        let effectiveFont = style.font ?? self.font ?? KindleFont.system(size: controlSize.defaultFontSize, weight: .bold)
+
+        let innerPad: EdgeInsets
+        let outerPad: EdgeInsets?
+        if let contentPad = style.contentPadding {
+            innerPad = contentPad
+            outerPad = style.padding
+        } else if let pad = style.padding {
+            innerPad = pad
+            outerPad = nil
+        } else {
+            innerPad = controlSize.defaultPadding
+            outerPad = nil
+        }
+
+        var childCtx = self.merging(style)
+        childCtx.font = effectiveFont
+        childCtx.fg = effectiveFg
+        if let bg = effectiveBg {
+            childCtx.bg = bg
+        }
+
+        return ResolvedButtonVisuals(
+            role: role,
+            controlSize: controlSize,
+            isDisabled: isDisabled,
+            effectiveBg: effectiveBg,
+            effectiveFg: effectiveFg,
+            effectiveBorderColor: effectiveBorderColor,
+            effectiveBorderWidth: effectiveBorderWidth,
+            effectiveRadius: effectiveRadius,
+            effectiveShadow: effectiveShadow,
+            effectiveFont: effectiveFont,
+            innerPad: innerPad,
+            outerPad: outerPad,
+            childCtx: childCtx
+        )
     }
 }

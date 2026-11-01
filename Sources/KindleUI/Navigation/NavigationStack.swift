@@ -429,10 +429,13 @@ extension View {
     public func navigationDestination<D: Hashable, C: View>(
         for data: D.Type,
         @ViewBuilder destination: @escaping (D) -> C
-    ) -> some View {
-        KindleNavigationStorage.shared.registerDestination(for: data) { val in
-            destination(val).buildRenderTree()
+    ) -> ModifiedContent<Self> {
+        let register = {
+            KindleNavigationStorage.shared.registerDestination(for: data) { val in
+                destination(val).buildRenderTree()
+            }
         }
-        return self
+        register()
+        return ModifiedContent(content: self, onMakeNode: register) { _ in }
     }
 }

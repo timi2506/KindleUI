@@ -284,6 +284,22 @@ static void* resolve_sym_uncached(const char* name) {
     return dlsym(RTLD_DEFAULT, name);
 }
 
+static void kgtk_ensure_webkit_loaded(void) {
+    if (g_webkit_lib) return;
+    const char* webkit_candidates[] = {
+        "libwebkitgtk-1.0.so.0",
+        "/usr/lib/libwebkitgtk-1.0.so.0",
+        "libwebkit-1.0.so.2",
+        "/usr/lib/libwebkit-1.0.so.2",
+        "libwebkitgtk-1.0.so",
+        NULL
+    };
+    for (int i = 0; webkit_candidates[i] != NULL; ++i) {
+        g_webkit_lib = dlopen(webkit_candidates[i], RTLD_LAZY | RTLD_GLOBAL);
+        if (g_webkit_lib) break;
+    }
+}
+
 bool kgtk_init(void) {
     const char* gtk_candidates[] = {
         "libgtk-x11-2.0.so.0",
@@ -316,18 +332,7 @@ bool kgtk_init(void) {
         thread_init(NULL);
     }
 
-    const char* webkit_candidates[] = {
-        "libwebkitgtk-1.0.so.0",
-        "/usr/lib/libwebkitgtk-1.0.so.0",
-        "libwebkit-1.0.so.2",
-        "/usr/lib/libwebkit-1.0.so.2",
-        "libwebkitgtk-1.0.so",
-        NULL
-    };
-    for (int i = 0; webkit_candidates[i] != NULL; ++i) {
-        g_webkit_lib = dlopen(webkit_candidates[i], RTLD_LAZY | RTLD_GLOBAL);
-        if (g_webkit_lib) break;
-    }
+    kgtk_ensure_webkit_loaded();
 
     fn_gtk_init_check init_fn = (fn_gtk_init_check)resolve_sym("gtk_init_check");
     if (!init_fn) return false;
@@ -622,6 +627,63 @@ void kgtk_schedule_idle(KIdleCallback callback, void* user_data) {
     pthread_mutex_unlock(&g_fallback_idle_mutex);
 }
 
+static KIdleTask* g_low_idle_task = NULL;
+static int g_has_pending_low_idle = 0;
+
+static int c_low_idle_trampoline(void* data) {
+    (void)data;
+    pthread_mutex_lock(&g_idle_mutex);
+    int high_pending = g_has_pending_idle;
+    if (high_pending) {
+        pthread_mutex_unlock(&g_idle_mutex);
+        return 1; // Wait until high-priority UI rebuilds finish
+    }
+    KIdleTask* task = g_low_idle_task;
+    g_low_idle_task = NULL;
+    g_has_pending_low_idle = 0;
+    pthread_mutex_unlock(&g_idle_mutex);
+
+    if (task) {
+        if (task->callback) {
+            task->callback(task->user_data);
+        }
+        free(task);
+    }
+    return 0; // G_SOURCE_REMOVE
+}
+
+void kgtk_schedule_low_priority_idle(KIdleCallback callback, void* user_data) {
+    if (!callback) return;
+    fn_g_idle_add_full idle_add_full = (fn_g_idle_add_full)resolve_sym("g_idle_add_full");
+    fn_g_idle_add idle_add = (fn_g_idle_add)resolve_sym("g_idle_add");
+    if (!idle_add_full && !idle_add) return;
+
+    KIdleTask* task = (KIdleTask*)malloc(sizeof(KIdleTask));
+    if (!task) return;
+    task->callback = callback;
+    task->user_data = user_data;
+    task->next = NULL;
+
+    pthread_mutex_lock(&g_idle_mutex);
+    if (g_low_idle_task) {
+        free(g_low_idle_task);
+    }
+    g_low_idle_task = task;
+    int was_pending = g_has_pending_low_idle;
+    g_has_pending_low_idle = 1;
+    pthread_mutex_unlock(&g_idle_mutex);
+
+    if (!was_pending) {
+        // Priority 280 (between G_PRIORITY_DEFAULT_IDLE=200 and G_PRIORITY_LOW=300)
+        // so all expose events (120) and normal idles finish first.
+        if (idle_add_full) {
+            idle_add_full(280, c_low_idle_trampoline, NULL, NULL);
+        } else if (idle_add) {
+            idle_add(c_low_idle_trampoline, NULL);
+        }
+    }
+}
+
 bool kgtk_is_slider_dragging(void) {
     return g_slider_dragging || g_gesture_dragging || g_canvas_dragging || (g_scroll_drag.active && g_scroll_drag.threshold_crossed);
 }
@@ -644,6 +706,53 @@ void kgtk_set_simulated_screen_size(int width, int height) {
         g_has_simulated_screen_size = true;
         g_ui_scale = 0.0;
     }
+}
+
+static int g_is_color_display = -1;
+
+void kgtk_set_simulated_color_display(bool is_color) {
+    g_is_color_display = is_color ? 1 : 0;
+}
+
+bool kgtk_is_color_display(void) {
+    if (__builtin_expect(g_is_color_display >= 0, 1)) {
+        return g_is_color_display != 0;
+    }
+    const char* env_color = getenv("KINDLEUI_COLOR");
+    if (env_color && env_color[0] != '\0') {
+        if (strcmp(env_color, "1") == 0 || strcasecmp(env_color, "true") == 0 ||
+            strcasecmp(env_color, "yes") == 0 || strcasecmp(env_color, "on") == 0) {
+            g_is_color_display = 1;
+            return true;
+        }
+        if (strcmp(env_color, "0") == 0 || strcasecmp(env_color, "false") == 0 ||
+            strcasecmp(env_color, "no") == 0 || strcasecmp(env_color, "off") == 0) {
+            g_is_color_display = 0;
+            return false;
+        }
+    }
+    bool detected = false;
+    // Kindle Colorsoft & Kindle Scribe Colorsoft expose MediaTek Kaleido 3 CFA sysfs nodes
+    if (access("/sys/class/cfa_class/cfa", F_OK) == 0 ||
+        access("/sys/module/cfa", F_OK) == 0 ||
+        access("/sys/firmware/devicetree/base/soc/hwtcon@1c000000/epd/cfa-panel", F_OK) == 0) {
+        detected = true;
+    } else {
+        FILE* f = fopen("/sys/class/graphics/fb0/bits_per_pixel", "r");
+        if (f) {
+            char buf[32] = {0};
+            if (fgets(buf, sizeof(buf), f)) {
+                int bpp = atoi(buf);
+                if (bpp >= 16) {
+                    detected = true;
+                }
+            }
+            fclose(f);
+        }
+    }
+    g_is_color_display = detected ? 1 : 0;
+    fprintf(stderr, "[KindleUI] Display mode: %s\n", detected ? "Kaleido 3 Colorsoft (CFA RGB)" : "Monochrome E-Ink (16-shade)");
+    return detected;
 }
 
 void kgtk_get_screen_size(int* out_width, int* out_height) {
@@ -820,15 +929,193 @@ void kgtk_window_connect_quit_keys(KWidgetRef window, KIdleCallback on_quit, voi
     }
 }
 
+static void kgtk_apply_default_pinned_style(KWidgetRef widget);
+
+static void c_vbox_clamp_children_allocate(KWidgetRef box, KGtkAllocation* box_alloc, void* data) {
+    (void)data;
+    if (!box || !box_alloc || box_alloc->width <= 0 || box_alloc->height <= 0) return;
+    fn_gtk_container_get_children get_children = (fn_gtk_container_get_children)resolve_sym("gtk_container_get_children");
+    fn_gtk_widget_get_allocation get_alloc = (fn_gtk_widget_get_allocation)resolve_sym("gtk_widget_get_allocation");
+    fn_gtk_widget_size_allocate size_alloc = (fn_gtk_widget_size_allocate)resolve_sym("gtk_widget_size_allocate");
+    fn_g_list_free free_fn = (fn_g_list_free)resolve_sym("g_list_free");
+    if (!get_children || !get_alloc || !size_alloc) return;
+
+    KGList* list = get_children(box);
+    if (!list) return;
+
+    int box_right = box_alloc->x + box_alloc->width;
+    for (KGList* iter = list; iter != NULL; iter = iter->next) {
+        KWidgetRef child = (KWidgetRef)iter->data;
+        if (!child) continue;
+        KGtkAllocation ca = { 0, 0, 0, 0 };
+        get_alloc(child, &ca);
+        if (ca.width <= 0 || ca.height <= 0) continue;
+        int nx = ca.x < box_alloc->x ? box_alloc->x : ca.x;
+        int nw = ca.width;
+        if (nx + nw > box_right) {
+            nw = box_right - nx;
+            if (nw < 1) nw = 1;
+        }
+        if (nx != ca.x || nw != ca.width) {
+            KGtkAllocation na = ca;
+            na.x = nx;
+            na.width = nw;
+            size_alloc(child, &na);
+        }
+    }
+    if (free_fn) free_fn(list);
+}
+
 KWidgetRef kgtk_vbox_new(bool homogeneous, int spacing) {
     fn_gtk_box_new_2 fn = (fn_gtk_box_new_2)resolve_sym("gtk_vbox_new");
-    if (fn) return fn(homogeneous ? 1 : 0, kgtk_scale_px(spacing));
+    fn_g_signal_connect_data conn = (fn_g_signal_connect_data)resolve_sym("g_signal_connect_data");
+    if (fn) {
+        KWidgetRef w = fn(homogeneous ? 1 : 0, kgtk_scale_px(spacing));
+        if (w) {
+            kgtk_apply_default_pinned_style(w);
+            if (conn) {
+                conn(w, "size-allocate", (void*)c_vbox_clamp_children_allocate, NULL, NULL, 1);
+            }
+        }
+        return w;
+    }
     return NULL;
+}
+
+static void c_hbox_clamp_children_allocate(KWidgetRef box, KGtkAllocation* box_alloc, void* data) {
+    (void)data;
+    if (!box || !box_alloc || box_alloc->width <= 0) return;
+    fn_gtk_container_get_children get_children = (fn_gtk_container_get_children)resolve_sym("gtk_container_get_children");
+    fn_gtk_widget_get_allocation get_alloc = (fn_gtk_widget_get_allocation)resolve_sym("gtk_widget_get_allocation");
+    fn_gtk_widget_size_allocate size_alloc = (fn_gtk_widget_size_allocate)resolve_sym("gtk_widget_size_allocate");
+    fn_g_list_free free_fn = (fn_g_list_free)resolve_sym("g_list_free");
+    if (!get_children || !get_alloc || !size_alloc) return;
+
+    KGList* list = get_children(box);
+    if (!list) return;
+
+    KWidgetRef kids[32];
+    KGtkAllocation allocs[32];
+    int n = 0;
+    for (KGList* iter = list; iter != NULL && n < 32; iter = iter->next) {
+        KWidgetRef child = (KWidgetRef)iter->data;
+        if (!child) continue;
+        KGtkAllocation ca = { 0, 0, 0, 0 };
+        get_alloc(child, &ca);
+        if (ca.width > 0 && ca.height > 0 && ca.x >= box_alloc->x) {
+            kids[n] = child;
+            allocs[n] = ca;
+            n++;
+        }
+    }
+    if (free_fn) free_fn(list);
+    if (n <= 0) return;
+
+    for (int i = 1; i < n; ++i) {
+        KWidgetRef ck = kids[i];
+        KGtkAllocation ca = allocs[i];
+        int j = i - 1;
+        while (j >= 0 && allocs[j].x > ca.x) {
+            kids[j + 1] = kids[j];
+            allocs[j + 1] = allocs[j];
+            j--;
+        }
+        kids[j + 1] = ck;
+        allocs[j + 1] = ca;
+    }
+
+    int box_right = box_alloc->x + box_alloc->width;
+    int rightmost = allocs[n - 1].x + allocs[n - 1].width;
+    int overflow = rightmost - box_right;
+    if (overflow <= 0) return;
+
+    int orig_w[32];
+    int new_w[32];
+    int gaps[32];
+    for (int i = 0; i < n; ++i) {
+        orig_w[i] = allocs[i].width;
+        new_w[i] = allocs[i].width;
+        if (i == 0) {
+            gaps[i] = allocs[0].x > box_alloc->x ? (allocs[0].x - box_alloc->x) : 0;
+        } else {
+            int g = allocs[i].x - (allocs[i - 1].x + allocs[i - 1].width);
+            gaps[i] = g > 0 ? g : 0;
+        }
+    }
+
+    int min_floor = kgtk_scale_px(24);
+    if (min_floor < 8) min_floor = 8;
+    int rem = overflow;
+    for (int iter = 0; iter < 32 && rem > 0; ++iter) {
+        int max_w = -1;
+        int second_w = -1;
+        int max_count = 0;
+        for (int i = 0; i < n; ++i) {
+            int floor_i = orig_w[i] < min_floor ? orig_w[i] : min_floor;
+            if (new_w[i] <= floor_i) continue;
+            if (new_w[i] > max_w) {
+                second_w = max_w;
+                max_w = new_w[i];
+                max_count = 1;
+            } else if (new_w[i] == max_w) {
+                max_count++;
+            } else if (new_w[i] > second_w) {
+                second_w = new_w[i];
+            }
+        }
+        if (max_count == 0 || max_w <= 1) break;
+        int target_w = second_w > min_floor ? second_w : min_floor;
+        int step = max_w - target_w;
+        if (step <= 0) step = 1;
+        if (step * max_count > rem) {
+            step = rem / max_count;
+            if (step <= 0) step = 1;
+        }
+        for (int i = 0; i < n && rem > 0; ++i) {
+            int floor_i = orig_w[i] < min_floor ? orig_w[i] : min_floor;
+            if (new_w[i] == max_w && new_w[i] > floor_i) {
+                int drop = step;
+                if (new_w[i] - drop < floor_i) drop = new_w[i] - floor_i;
+                if (drop > rem) drop = rem;
+                new_w[i] -= drop;
+                rem -= drop;
+            }
+        }
+    }
+
+    int cur_x = box_alloc->x + gaps[0];
+    for (int i = 0; i < n; ++i) {
+        if (i > 0) {
+            cur_x += gaps[i];
+        }
+        int clamped_w = new_w[i];
+        if (cur_x + clamped_w > box_right) {
+            clamped_w = box_right - cur_x;
+            if (clamped_w < 1) clamped_w = 1;
+        }
+        if (cur_x != allocs[i].x || clamped_w != allocs[i].width) {
+            KGtkAllocation na = allocs[i];
+            na.x = cur_x;
+            na.width = clamped_w;
+            size_alloc(kids[i], &na);
+        }
+        cur_x += clamped_w;
+    }
 }
 
 KWidgetRef kgtk_hbox_new(bool homogeneous, int spacing) {
     fn_gtk_box_new_2 fn = (fn_gtk_box_new_2)resolve_sym("gtk_hbox_new");
-    if (fn) return fn(homogeneous ? 1 : 0, kgtk_scale_px(spacing));
+    fn_g_signal_connect_data conn = (fn_g_signal_connect_data)resolve_sym("g_signal_connect_data");
+    if (fn) {
+        KWidgetRef w = fn(homogeneous ? 1 : 0, kgtk_scale_px(spacing));
+        if (w) {
+            kgtk_apply_default_pinned_style(w);
+            if (conn) {
+                conn(w, "size-allocate", (void*)c_hbox_clamp_children_allocate, NULL, NULL, 1);
+            }
+        }
+        return w;
+    }
     return NULL;
 }
 
@@ -847,7 +1134,7 @@ static void kgtk_container_remove(KWidgetRef container, KWidgetRef widget) {
     if (fn && container && widget) fn(container, widget);
 }
 
-void kgtk_container_clear(KWidgetRef container) {
+void kgtk_prepare_slot_mount(void) {
     g_scroll_drag.active = false;
     g_scroll_drag.threshold_crossed = false;
     g_scroll_drag.active_sw = NULL;
@@ -876,6 +1163,31 @@ void kgtk_container_clear(KWidgetRef container) {
     g_active_modal_scrolled_window = NULL;
     g_has_frozen_scroll = false;
     kgtk_detach_cached_webviews();
+}
+
+void kgtk_get_active_scrolled_windows(KWidgetRef* out_primary, KWidgetRef* out_modal) {
+    if (out_primary) *out_primary = g_active_scrolled_window;
+    if (out_modal) *out_modal = g_active_modal_scrolled_window;
+}
+
+void kgtk_set_active_scrolled_windows(KWidgetRef primary, KWidgetRef modal) {
+    g_scroll_drag.active = false;
+    g_scroll_drag.threshold_crossed = false;
+    g_scroll_drag.active_sw = NULL;
+    g_scroll_drag.source_widget = NULL;
+    if (g_scroll_reset_requested) {
+        g_last_scroll_y = 0.0;
+        g_pending_scroll_restore = 0.0;
+        g_scroll_reset_requested = false;
+    }
+    g_active_scrolled_window = primary;
+    g_active_modal_scrolled_window = modal;
+    g_has_frozen_scroll = (modal != NULL);
+    g_scroll_tracking_enabled = true;
+}
+
+void kgtk_container_clear(KWidgetRef container) {
+    kgtk_prepare_slot_mount();
     fn_gtk_container_get_children get_children = (fn_gtk_container_get_children)resolve_sym("gtk_container_get_children");
     fn_gtk_widget_destroy destroy_fn = (fn_gtk_widget_destroy)resolve_sym("gtk_widget_destroy");
     fn_g_list_free free_fn = (fn_g_list_free)resolve_sym("g_list_free");
@@ -893,7 +1205,9 @@ void kgtk_container_clear(KWidgetRef container) {
 KWidgetRef kgtk_alignment_new(float xalign, float yalign, float xscale, float yscale) {
     fn_gtk_alignment_new fn = (fn_gtk_alignment_new)resolve_sym("gtk_alignment_new");
     if (fn) {
-        return fn(xalign, yalign, xscale, yscale);
+        KWidgetRef w = fn(xalign, yalign, xscale, yscale);
+        if (w) kgtk_apply_default_pinned_style(w);
+        return w;
     }
     return NULL;
 }
@@ -1302,7 +1616,11 @@ static int c_frozen_scroll_expose(KWidgetRef widget, void* event, void* data) {
 
 static KWidgetRef kgtk_event_box_new(void) {
     fn_gtk_event_box_new fn = (fn_gtk_event_box_new)resolve_sym("gtk_event_box_new");
-    if (fn) return fn();
+    if (fn) {
+        KWidgetRef w = fn();
+        if (w) kgtk_apply_default_pinned_style(w);
+        return w;
+    }
     return NULL;
 }
 
@@ -1313,12 +1631,10 @@ KWidgetRef kgtk_frozen_scrolled_view_new(uint8_t bg_gray) {
     g_active_scrolled_window = NULL;
     g_has_frozen_scroll = true;
 
-    KWidgetRef eb = kgtk_event_box_new();
-    fn_gtk_event_box_set_visible_window set_vis = (fn_gtk_event_box_set_visible_window)resolve_sym("gtk_event_box_set_visible_window");
+    KWidgetRef eb = kgtk_alignment_new(0.0f, 0.0f, 1.0f, 1.0f);
     fn_g_signal_connect_data conn = (fn_g_signal_connect_data)resolve_sym("g_signal_connect_data");
     fn_g_object_set_data_full set_data = (fn_g_object_set_data_full)resolve_sym("g_object_set_data_full");
     if (!eb) return NULL;
-    if (set_vis) set_vis(eb, 0);
 
     KFrozenScrollState* st = (KFrozenScrollState*)malloc(sizeof(KFrozenScrollState));
     if (st && conn) {
@@ -1502,39 +1818,135 @@ void kgtk_widget_set_sensitive(KWidgetRef widget, bool sensitive) {
     if (fn && widget) fn(widget, sensitive ? 1 : 0);
 }
 
+typedef struct {
+    void* pixmap;
+    int pixmap_w;
+    int pixmap_h;
+    uint32_t text_version;
+    uint32_t rendered_text_version;
+    uint32_t rendered_style_key;
+    int rendered_pango_w;
+    uint8_t fg_gray;
+    uint8_t bg_gray;
+    bool has_bg_gray;
+    bool wrap;
+    bool wrap_signals_connected;
+    int max_lines;
+} KLabelRenderState;
+
+static void c_label_render_state_destroy(void* data) {
+    KLabelRenderState* st = (KLabelRenderState*)data;
+    if (!st) return;
+    if (st->pixmap) {
+        fn_g_object_unref unref = (fn_g_object_unref)resolve_sym("g_object_unref");
+        if (unref) unref(st->pixmap);
+        st->pixmap = NULL;
+    }
+    free(st);
+}
+
+static KLabelRenderState* c_get_or_create_label_render_state(KWidgetRef label) {
+    if (!label) return NULL;
+    fn_g_object_get_data get_data = (fn_g_object_get_data)resolve_sym("g_object_get_data");
+    fn_g_object_set_data_full set_data = (fn_g_object_set_data_full)resolve_sym("g_object_set_data_full");
+    if (!get_data || !set_data) return NULL;
+    KLabelRenderState* st = (KLabelRenderState*)get_data(label, "kindle-label-render-state");
+    if (!st) {
+        st = (KLabelRenderState*)calloc(1, sizeof(KLabelRenderState));
+        if (st) {
+            st->text_version = 1;
+            st->fg_gray = 0x11;
+            st->bg_gray = 0xFF;
+            st->has_bg_gray = false;
+            st->wrap = false;
+            st->wrap_signals_connected = false;
+            st->max_lines = 0;
+            set_data(label, "kindle-label-render-state", st, c_label_render_state_destroy);
+        }
+    }
+    return st;
+}
+
+static void kgtk_attach_label_render_state(KWidgetRef label);
+static void kgtk_bump_label_text_version(KWidgetRef label);
+
 KWidgetRef kgtk_label_new(const char* text) {
     fn_gtk_label_new fn = (fn_gtk_label_new)resolve_sym("gtk_label_new");
-    if (fn) return fn(text);
+    if (fn) {
+        KWidgetRef lbl = fn(text);
+        if (lbl) kgtk_attach_label_render_state(lbl);
+        return lbl;
+    }
     return NULL;
 }
 
 void kgtk_label_set_text(KWidgetRef label, const char* text) {
     fn_gtk_label_set_text fn = (fn_gtk_label_set_text)resolve_sym("gtk_label_set_text");
-    if (fn && label) fn(label, text);
+    if (fn && label) {
+        fn(label, text);
+        kgtk_bump_label_text_version(label);
+    }
 }
 
 void kgtk_label_set_markup(KWidgetRef label, const char* markup) {
     fn_gtk_label_set_markup fn = (fn_gtk_label_set_markup)resolve_sym("gtk_label_set_markup");
-    if (fn && label) fn(label, markup);
+    if (fn && label) {
+        fn(label, markup);
+        kgtk_bump_label_text_version(label);
+    }
 }
 
 typedef void* (KGTK_ABI *fn_gtk_label_get_layout)(KWidgetRef);
 typedef void (KGTK_ABI *fn_pango_layout_set_width)(void*, int);
 typedef void (KGTK_ABI *fn_pango_layout_set_wrap)(void*, int);
+typedef void (KGTK_ABI *fn_pango_layout_set_ellipsize)(void*, int);
+typedef void (KGTK_ABI *fn_pango_layout_set_height)(void*, int);
 typedef int (KGTK_ABI *fn_pango_layout_get_width)(void*);
 typedef void (KGTK_ABI *fn_pango_layout_get_pixel_size)(void*, int*, int*);
 typedef void (KGTK_ABI *fn_gtk_widget_queue_resize)(KWidgetRef);
 
+static void c_label_apply_wrap_and_limits(KWidgetRef widget, void* layout) {
+    if (!widget || !layout) return;
+    fn_pango_layout_set_wrap set_wrap = (fn_pango_layout_set_wrap)resolve_sym("pango_layout_set_wrap");
+    fn_pango_layout_set_ellipsize set_ellipsize = (fn_pango_layout_set_ellipsize)resolve_sym("pango_layout_set_ellipsize");
+    fn_pango_layout_set_height set_height = (fn_pango_layout_set_height)resolve_sym("pango_layout_set_height");
+    if (set_wrap) set_wrap(layout, 0); // PANGO_WRAP_WORD
+    KLabelRenderState* st = c_get_or_create_label_render_state(widget);
+    if (st && st->max_lines > 0) {
+        if (set_ellipsize) set_ellipsize(layout, 3); // PANGO_ELLIPSIZE_END
+        if (set_height) set_height(layout, -st->max_lines);
+    } else {
+        if (set_ellipsize) set_ellipsize(layout, 0); // PANGO_ELLIPSIZE_NONE
+    }
+}
+
 static int c_label_target_pango_width(KWidgetRef widget) {
     fn_g_object_get_data get_data = (fn_g_object_get_data)resolve_sym("g_object_get_data");
+    fn_gtk_widget_get_parent get_parent = (fn_gtk_widget_get_parent)resolve_sym("gtk_widget_get_parent");
     int saved_w = get_data ? (int)(intptr_t)get_data(widget, "kindle-label-wrap-w") : 0;
     int wrap_w = saved_w;
-    if (wrap_w <= 60) {
-        wrap_w = kgtk_scale_px(1720);
-        if (wrap_w <= 60) wrap_w = 1120;
+    if (wrap_w <= 20 && get_parent && get_data) {
+        KWidgetRef cur = get_parent(widget);
+        int depth = 0;
+        while (cur && depth < 12) {
+            int anc_w = (int)(intptr_t)get_data(cur, "kindle-label-wrap-w");
+            if (anc_w > 24) {
+                int deduct = kgtk_scale_px(28);
+                wrap_w = (anc_w > deduct + 24) ? (anc_w - deduct) : anc_w;
+                break;
+            }
+            cur = get_parent(cur);
+            depth++;
+        }
     }
-    int pad_deduct = (saved_w > 60) ? 2 : 6;
-    return (wrap_w - pad_deduct) * 1024;
+    if (wrap_w <= 20) {
+        wrap_w = kgtk_scale_px(1720);
+        if (wrap_w <= 20) wrap_w = 1120;
+    }
+    int pad_deduct = (saved_w > 20) ? 2 : 6;
+    int eff_w = wrap_w - pad_deduct;
+    if (eff_w < 16) eff_w = 16;
+    return eff_w * 1024;
 }
 
 static void c_label_wrap_size_request_pre(KWidgetRef widget, KGtkRequisition* req, void* data) {
@@ -1544,12 +1956,11 @@ static void c_label_wrap_size_request_pre(KWidgetRef widget, KGtkRequisition* re
     fn_gtk_label_get_layout get_layout = (fn_gtk_label_get_layout)resolve_sym("gtk_label_get_layout");
     fn_pango_layout_set_width set_width = (fn_pango_layout_set_width)resolve_sym("pango_layout_set_width");
     fn_pango_layout_get_width get_width = (fn_pango_layout_get_width)resolve_sym("pango_layout_get_width");
-    fn_pango_layout_set_wrap set_wrap = (fn_pango_layout_set_wrap)resolve_sym("pango_layout_set_wrap");
     if (!get_layout || !set_width) return;
 
     void* layout = get_layout(widget);
     if (!layout) return;
-    if (set_wrap) set_wrap(layout, 0); // PANGO_WRAP_WORD
+    c_label_apply_wrap_and_limits(widget, layout);
 
     int target_pango_w = c_label_target_pango_width(widget);
     if (!get_width || get_width(layout) != target_pango_w) {
@@ -1563,13 +1974,12 @@ static void c_label_wrap_size_request(KWidgetRef widget, KGtkRequisition* req, v
     fn_gtk_label_get_layout get_layout = (fn_gtk_label_get_layout)resolve_sym("gtk_label_get_layout");
     fn_pango_layout_set_width set_width = (fn_pango_layout_set_width)resolve_sym("pango_layout_set_width");
     fn_pango_layout_get_width get_width = (fn_pango_layout_get_width)resolve_sym("pango_layout_get_width");
-    fn_pango_layout_set_wrap set_wrap = (fn_pango_layout_set_wrap)resolve_sym("pango_layout_set_wrap");
     fn_pango_layout_get_pixel_size get_pixel_size = (fn_pango_layout_get_pixel_size)resolve_sym("pango_layout_get_pixel_size");
     if (!get_layout || !set_width || !get_pixel_size) return;
 
     void* layout = get_layout(widget);
     if (!layout) return;
-    if (set_wrap) set_wrap(layout, 0); // PANGO_WRAP_WORD
+    c_label_apply_wrap_and_limits(widget, layout);
 
     int target_pango_w = c_label_target_pango_width(widget);
     if (!get_width || get_width(layout) != target_pango_w) {
@@ -1578,7 +1988,9 @@ static void c_label_wrap_size_request(KWidgetRef widget, KGtkRequisition* req, v
 
     int lw = 0, lh = 0;
     get_pixel_size(layout, &lw, &lh);
-    req->width = kgtk_scale_px(120);
+    int min_req_w = kgtk_scale_px(48);
+    if (min_req_w < 24) min_req_w = 24;
+    req->width = (lw > 0 && lw < min_req_w) ? (lw + 2) : min_req_w;
     if (lh > 0) {
         req->height = lh + 4;
     }
@@ -1586,10 +1998,9 @@ static void c_label_wrap_size_request(KWidgetRef widget, KGtkRequisition* req, v
 
 static void c_label_wrap_size_allocate(KWidgetRef widget, KGtkAllocation* alloc, void* data) {
     (void)data;
-    if (!widget || !alloc || alloc->width <= 60) return;
+    if (!widget || !alloc || alloc->width <= 20) return;
     fn_gtk_label_get_layout get_layout = (fn_gtk_label_get_layout)resolve_sym("gtk_label_get_layout");
     fn_pango_layout_set_width set_width = (fn_pango_layout_set_width)resolve_sym("pango_layout_set_width");
-    fn_pango_layout_set_wrap set_wrap = (fn_pango_layout_set_wrap)resolve_sym("pango_layout_set_wrap");
     fn_pango_layout_get_width get_width = (fn_pango_layout_get_width)resolve_sym("pango_layout_get_width");
     fn_pango_layout_get_pixel_size get_pixel_size = (fn_pango_layout_get_pixel_size)resolve_sym("pango_layout_get_pixel_size");
     fn_gtk_widget_queue_resize queue_resize = (fn_gtk_widget_queue_resize)resolve_sym("gtk_widget_queue_resize");
@@ -1599,10 +2010,11 @@ static void c_label_wrap_size_allocate(KWidgetRef widget, KGtkAllocation* alloc,
 
     void* layout = get_layout(widget);
     if (!layout) return;
-    if (set_wrap) set_wrap(layout, 0); // PANGO_WRAP_WORD
+    c_label_apply_wrap_and_limits(widget, layout);
 
     int prev_w = get_data ? (int)(intptr_t)get_data(widget, "kindle-label-wrap-w") : 0;
-    int target_pango_w = (alloc->width - 2) * 1024;
+    int eff_w = alloc->width > 4 ? (alloc->width - 2) : alloc->width;
+    int target_pango_w = eff_w * 1024;
     if (!get_width || get_width(layout) != target_pango_w) {
         set_width(layout, target_pango_w);
     }
@@ -1627,12 +2039,34 @@ static void c_label_wrap_size_allocate(KWidgetRef widget, KGtkAllocation* alloc,
 void kgtk_label_set_line_wrap(KWidgetRef label, bool wrap) {
     fn_gtk_label_set_line_wrap fn = (fn_gtk_label_set_line_wrap)resolve_sym("gtk_label_set_line_wrap");
     if (fn && label) fn(label, wrap ? 1 : 0);
-    if (wrap && label) {
+    KLabelRenderState* st = c_get_or_create_label_render_state(label);
+    if (st) {
+        st->wrap = wrap;
+        st->text_version += 1;
+    }
+    if (wrap && label && st && !st->wrap_signals_connected) {
         fn_g_signal_connect_data conn = (fn_g_signal_connect_data)resolve_sym("g_signal_connect_data");
         if (conn) {
             conn(label, "size-request", (void*)c_label_wrap_size_request_pre, NULL, NULL, 0);
             conn(label, "size-request", (void*)c_label_wrap_size_request, NULL, NULL, 1);
             conn(label, "size-allocate", (void*)c_label_wrap_size_allocate, NULL, NULL, 0);
+            st->wrap_signals_connected = true;
+        }
+    }
+}
+
+void kgtk_label_set_max_lines(KWidgetRef label, int max_lines) {
+    if (!label) return;
+    KLabelRenderState* st = c_get_or_create_label_render_state(label);
+    if (st) {
+        st->max_lines = max_lines > 0 ? max_lines : 0;
+        st->text_version += 1;
+    }
+    fn_gtk_label_get_layout get_layout = (fn_gtk_label_get_layout)resolve_sym("gtk_label_get_layout");
+    if (get_layout) {
+        void* layout = get_layout(label);
+        if (layout && st && st->wrap) {
+            c_label_apply_wrap_and_limits(label, layout);
         }
     }
 }
@@ -1710,22 +2144,41 @@ KWidgetRef kgtk_image_new_from_file_scaled(const char* filename, int max_width, 
             int stride = get_stride(pb);
             int nch = get_ch(pb);
             if (pixels && w > 0 && h > 0 && (nch == 3 || nch == 4)) {
+                bool is_color = kgtk_is_color_display();
                 for (int y = 0; y < h; ++y) {
                     uint8_t* row = pixels + y * stride;
                     for (int x = 0; x < w; ++x) {
                         uint8_t r = row[x * nch + 0];
                         uint8_t g = row[x * nch + 1];
                         uint8_t b = row[x * nch + 2];
-                        unsigned int lum = (77u * r + 150u * g + 29u * b) >> 8;
-                        if (nch == 4) {
-                            unsigned int a = row[x * nch + 3];
-                            lum = (lum * a + 255u * (255u - a)) / 255u;
-                            row[x * nch + 3] = 255;
+                        if (is_color) {
+                            if (nch == 4) {
+                                unsigned int a = row[x * nch + 3];
+                                r = (uint8_t)((r * a + 255u * (255u - a)) / 255u);
+                                g = (uint8_t)((g * a + 255u * (255u - a)) / 255u);
+                                b = (uint8_t)((b * a + 255u * (255u - a)) / 255u);
+                                row[x * nch + 3] = 255;
+                            }
+                            // Kaleido 3 CFA vibrancy enhancement (+18% saturation so colors read crisply on reflective E-Ink)
+                            int avg = ((int)r * 77 + (int)g * 150 + (int)b * 29) >> 8;
+                            int nr = avg + ((((int)r - avg) * 302) >> 8);
+                            int ng = avg + ((((int)g - avg) * 302) >> 8);
+                            int nb = avg + ((((int)b - avg) * 302) >> 8);
+                            row[x * nch + 0] = (uint8_t)(nr < 0 ? 0 : (nr > 255 ? 255 : nr));
+                            row[x * nch + 1] = (uint8_t)(ng < 0 ? 0 : (ng > 255 ? 255 : ng));
+                            row[x * nch + 2] = (uint8_t)(nb < 0 ? 0 : (nb > 255 ? 255 : nb));
+                        } else {
+                            unsigned int lum = (77u * r + 150u * g + 29u * b) >> 8;
+                            if (nch == 4) {
+                                unsigned int a = row[x * nch + 3];
+                                lum = (lum * a + 255u * (255u - a)) / 255u;
+                                row[x * nch + 3] = 255;
+                            }
+                            uint8_t q = kgtk_quantize_eink_gray((uint8_t)lum);
+                            row[x * nch + 0] = q;
+                            row[x * nch + 1] = q;
+                            row[x * nch + 2] = q;
                         }
-                        uint8_t q = kgtk_quantize_eink_gray((uint8_t)lum);
-                        row[x * nch + 0] = q;
-                        row[x * nch + 1] = q;
-                        row[x * nch + 2] = q;
                     }
                 }
             }
@@ -1744,10 +2197,13 @@ KWidgetRef kgtk_drawing_area_new(void) {
     fn_gtk_widget_add_events add_events = (fn_gtk_widget_add_events)resolve_sym("gtk_widget_add_events");
     if (fn) {
         KWidgetRef da = fn();
-        if (da && add_events) {
-            // GDK_EXPOSURE_MASK (2) | GDK_POINTER_MOTION_MASK (4) | GDK_BUTTON_MOTION_MASK (16)
-            // | GDK_BUTTON1_MOTION_MASK (32) | GDK_BUTTON_PRESS_MASK (256) | GDK_BUTTON_RELEASE_MASK (512)
-            add_events(da, 2 | 4 | 16 | 32 | 256 | 512);
+        if (da) {
+            kgtk_apply_default_pinned_style(da);
+            if (add_events) {
+                // GDK_EXPOSURE_MASK (2) | GDK_POINTER_MOTION_MASK (4) | GDK_BUTTON_MOTION_MASK (16)
+                // | GDK_BUTTON1_MOTION_MASK (32) | GDK_BUTTON_PRESS_MASK (256) | GDK_BUTTON_RELEASE_MASK (512)
+                add_events(da, 2 | 4 | 16 | 32 | 256 | 512);
+            }
         }
         return da;
     }
@@ -1927,6 +2383,110 @@ void kgtk_drawing_area_connect(
     }
 }
 
+typedef struct {
+    int min_w;
+    int max_w;
+    int min_h;
+    int max_h;
+    float xalign;
+    float yalign;
+    bool signals_connected;
+    bool in_reallocate;
+} KWidgetSizeConstraints;
+
+static void c_widget_size_constraints_request(KWidgetRef widget, KGtkRequisition* req, void* data) {
+    (void)widget;
+    KWidgetSizeConstraints* sc = (KWidgetSizeConstraints*)data;
+    if (!sc || !req) return;
+    if (sc->min_w > 0 && req->width < sc->min_w) req->width = sc->min_w;
+    if (sc->max_w > 0 && req->width > sc->max_w) req->width = sc->max_w;
+    if (sc->min_h > 0 && req->height < sc->min_h) req->height = sc->min_h;
+    if (sc->max_h > 0 && req->height > sc->max_h) req->height = sc->max_h;
+}
+
+static void c_widget_size_constraints_allocate(KWidgetRef widget, KGtkAllocation* alloc, void* data) {
+    KWidgetSizeConstraints* sc = (KWidgetSizeConstraints*)data;
+    if (!widget || !alloc || !sc || sc->in_reallocate) return;
+    int target_w = alloc->width;
+    int target_h = alloc->height;
+    int target_x = alloc->x;
+    int target_y = alloc->y;
+    if (sc->max_w > 0 && target_w > sc->max_w) {
+        int extra_w = target_w - sc->max_w;
+        target_x += (int)((double)extra_w * (double)sc->xalign + 0.5);
+        target_w = sc->max_w;
+    }
+    if (sc->max_h > 0 && target_h > sc->max_h) {
+        int extra_h = target_h - sc->max_h;
+        target_y += (int)((double)extra_h * (double)sc->yalign + 0.5);
+        target_h = sc->max_h;
+    }
+    if (target_w != alloc->width || target_h != alloc->height || target_x != alloc->x || target_y != alloc->y) {
+        fn_gtk_widget_size_allocate size_alloc = (fn_gtk_widget_size_allocate)resolve_sym("gtk_widget_size_allocate");
+        if (size_alloc) {
+            KGtkAllocation clamped = { target_x, target_y, target_w, target_h };
+            sc->in_reallocate = true;
+            size_alloc(widget, &clamped);
+            sc->in_reallocate = false;
+        }
+    }
+}
+
+void kgtk_widget_set_size_constraints(
+    KWidgetRef widget,
+    int min_width,
+    int max_width,
+    int min_height,
+    int max_height,
+    float xalign,
+    float yalign
+) {
+    if (!widget) return;
+    int min_w = min_width > 0 ? kgtk_scale_px(min_width) : -1;
+    int max_w = max_width > 0 ? kgtk_scale_px(max_width) : -1;
+    int min_h = min_height > 0 ? kgtk_scale_px(min_height) : -1;
+    int max_h = max_height > 0 ? kgtk_scale_px(max_height) : -1;
+    if (max_w > 0 && min_w > max_w) min_w = max_w;
+    if (max_h > 0 && min_h > max_h) min_h = max_h;
+
+    int wrap_hint = max_w > 0 ? max_w : min_w;
+    fn_g_object_get_data get_data = (fn_g_object_get_data)resolve_sym("g_object_get_data");
+    fn_g_object_set_data_full set_data = (fn_g_object_set_data_full)resolve_sym("g_object_set_data_full");
+    if (wrap_hint > 0 && set_data) {
+        set_data(widget, "kindle-label-wrap-w", (void*)(intptr_t)wrap_hint, NULL);
+    }
+
+    fn_gtk_widget_set_size_request fn = (fn_gtk_widget_set_size_request)resolve_sym("gtk_widget_set_size_request");
+    if (fn && (min_w > 0 || min_h > 0)) {
+        fn(widget, min_w, min_h);
+    }
+
+    if (min_w <= 0 && max_w <= 0 && min_h <= 0 && max_h <= 0) return;
+    if (!get_data || !set_data) return;
+
+    KWidgetSizeConstraints* sc = (KWidgetSizeConstraints*)get_data(widget, "kindle-size-constraints");
+    if (!sc) {
+        sc = (KWidgetSizeConstraints*)calloc(1, sizeof(KWidgetSizeConstraints));
+        if (!sc) return;
+        set_data(widget, "kindle-size-constraints", sc, free);
+    }
+    sc->min_w = min_w;
+    sc->max_w = max_w;
+    sc->min_h = min_h;
+    sc->max_h = max_h;
+    sc->xalign = xalign;
+    sc->yalign = yalign;
+
+    if (!sc->signals_connected) {
+        fn_g_signal_connect_data conn = (fn_g_signal_connect_data)resolve_sym("g_signal_connect_data");
+        if (conn) {
+            conn(widget, "size-request", (void*)c_widget_size_constraints_request, sc, NULL, 1);
+            conn(widget, "size-allocate", (void*)c_widget_size_constraints_allocate, sc, NULL, 0);
+            sc->signals_connected = true;
+        }
+    }
+}
+
 void kgtk_widget_set_size_request(KWidgetRef widget, int width, int height) {
     fn_gtk_widget_set_size_request fn = (fn_gtk_widget_set_size_request)resolve_sym("gtk_widget_set_size_request");
     int sw = width > 0 ? kgtk_scale_px(width) : width;
@@ -1945,6 +2505,17 @@ void kgtk_widget_show_all(KWidgetRef widget) {
     if (fn && widget) fn(widget);
 }
 
+void kgtk_widget_set_visible(KWidgetRef widget, bool visible) {
+    if (!widget) return;
+    fn_gtk_widget_show_all fn = (fn_gtk_widget_show_all)resolve_sym(visible ? "gtk_widget_show" : "gtk_widget_hide");
+    if (fn) fn(widget);
+}
+
+void kgtk_widget_destroy(KWidgetRef widget) {
+    fn_gtk_widget_destroy fn = (fn_gtk_widget_destroy)resolve_sym("gtk_widget_destroy");
+    if (fn && widget) fn(widget);
+}
+
 void kgtk_widget_queue_draw(KWidgetRef widget) {
     fn_gtk_widget_queue_draw fn = (fn_gtk_widget_queue_draw)resolve_sym("gtk_widget_queue_draw");
     if (fn && widget) fn(widget);
@@ -1959,6 +2530,79 @@ static uint8_t kgtk_quantize_eink_gray(uint8_t gray) {
     unsigned int idx = ((unsigned int)gray + 8u) / 17u;
     if (idx > 15u) idx = 15u;
     return (uint8_t)(idx * 17u);
+}
+
+/* Semantic Kaleido 3 Colorsoft palette encoding:
+ * Monochrome E-Ink shades have rawValue 0x00, 0x11, ..., 0xFF (where high nibble == low nibble).
+ * Colorsoft palette colors use byte codes where high nibble != low nibble:
+ *   - High nibble (code >> 4) encodes the exact 4-bit monochrome fallback shade index (0..15).
+ *   - Low nibble (code & 0x0F) identifies the Kaleido 3 Colorsoft RGB palette entry. */
+static bool kgtk_lookup_palette_rgb(uint8_t code, uint8_t* out_r, uint8_t* out_g, uint8_t* out_b) {
+    switch (code) {
+        case 0x21: *out_r = 0x1B; *out_g = 0x3B; *out_b = 0x6F; return true; // navyAccent   (#1B3B6F)
+        case 0x32: *out_r = 0x1D; *out_g = 0x4E; *out_b = 0xD8; return true; // royalBlue    (#1D4ED8)
+        case 0x43: *out_r = 0x0F; *out_g = 0x62; *out_b = 0x72; return true; // tealAccent   (#0F6272)
+        case 0x34: *out_r = 0x1E; *out_g = 0x6B; *out_b = 0x45; return true; // forestGreen  (#1E6B45)
+        case 0x35: *out_r = 0xA6; *out_g = 0x26; *out_b = 0x26; return true; // crimsonRed   (#A62626)
+        case 0x46: *out_r = 0x9A; *out_g = 0x5B; *out_b = 0x13; return true; // amberGold    (#9A5B13)
+        case 0x37: *out_r = 0x5B; *out_g = 0x32; *out_b = 0x78; return true; // plumPurple   (#5B3278)
+        case 0x58: *out_r = 0x47; *out_g = 0x58; *out_b = 0x6E; return true; // slateMuted   (#47586E)
+        case 0xB9: *out_r = 0x93; *out_g = 0xB4; *out_b = 0xDC; return true; // blueBorder   (#93B4DC)
+        case 0xBA: *out_r = 0xD8; *out_g = 0xB4; *out_b = 0x78; return true; // amberBorder  (#D8B478)
+        case 0xEB: *out_r = 0xE4; *out_g = 0xEE; *out_b = 0xF9; return true; // softBlueTint (#E4EEF9)
+        case 0xEC: *out_r = 0xE2; *out_g = 0xF2; *out_b = 0xF4; return true; // softTealTint (#E2F2F4)
+        case 0xED: *out_r = 0xE3; *out_g = 0xF3; *out_b = 0xEA; return true; // softGreenTint(#E3F3EA)
+        case 0xDE: *out_r = 0xF7; *out_g = 0xEC; *out_b = 0xD5; return true; // softAmberTint(#F7ECD5)
+        case 0xEF: *out_r = 0xF9; *out_g = 0xE6; *out_b = 0xE6; return true; // softRoseTint (#F9E6E6)
+        case 0x1A: *out_r = 0x13; *out_g = 0x23; *out_b = 0x3A; return true; // darkNavyCard (#13233A)
+        default: return false;
+    }
+}
+
+static uint8_t kgtk_normalize_color_code(uint8_t code) {
+    uint8_t r, g, b;
+    if (kgtk_lookup_palette_rgb(code, &r, &g, &b)) {
+        if (kgtk_is_color_display()) {
+            return code;
+        }
+        uint8_t hi = (code >> 4) & 0x0Fu;
+        return (uint8_t)(hi * 0x11u);
+    }
+    return kgtk_quantize_eink_gray(code);
+}
+
+static void kgtk_resolve_color_rgb(uint8_t code, uint8_t* out_r, uint8_t* out_g, uint8_t* out_b) {
+    uint8_t r, g, b;
+    if (kgtk_lookup_palette_rgb(code, &r, &g, &b)) {
+        if (kgtk_is_color_display()) {
+            *out_r = r;
+            *out_g = g;
+            *out_b = b;
+            return;
+        }
+        uint8_t hi = (code >> 4) & 0x0Fu;
+        uint8_t q = (uint8_t)(hi * 0x11u);
+        *out_r = q;
+        *out_g = q;
+        *out_b = q;
+        return;
+    }
+    uint8_t q = kgtk_quantize_eink_gray(code);
+    *out_r = q;
+    *out_g = q;
+    *out_b = q;
+}
+
+static KGdkColor kgtk_make_gdk_color(uint8_t code) {
+    uint8_t r, g, b;
+    kgtk_resolve_color_rgb(code, &r, &g, &b);
+    KGdkColor color = {
+        0,
+        (uint16_t)(((uint16_t)r << 8) | r),
+        (uint16_t)(((uint16_t)g << 8) | g),
+        (uint16_t)(((uint16_t)b << 8) | b)
+    };
+    return color;
 }
 
 #define KGTK_FONT_CACHE_SIZE 64
@@ -2054,6 +2698,31 @@ typedef void (KGTK_ABI *fn_gtk_widget_set_style)(KWidgetRef, void*);
 typedef void* (KGTK_ABI *fn_gtk_style_attach)(void*, void*);
 typedef void* (KGTK_ABI *fn_g_object_ref)(void*);
 
+static void* g_default_proto_gtk_style = NULL;
+static void* g_default_pinned_gtk_style = NULL;
+
+static void kgtk_apply_default_pinned_style(KWidgetRef widget) {
+    if (!widget || !g_root_gdk_window) return;
+    fn_gtk_widget_set_style set_style = (fn_gtk_widget_set_style)resolve_sym("gtk_widget_set_style");
+    if (!set_style) return;
+    if (g_default_proto_gtk_style) {
+        set_style(widget, g_default_proto_gtk_style);
+        return;
+    }
+    fn_gtk_rc_get_style rc_get_style = (fn_gtk_rc_get_style)resolve_sym("gtk_rc_get_style");
+    fn_gtk_style_attach style_attach = (fn_gtk_style_attach)resolve_sym("gtk_style_attach");
+    fn_g_object_ref obj_ref = (fn_g_object_ref)resolve_sym("g_object_ref");
+    if (!rc_get_style || !style_attach || !obj_ref) return;
+    void* proto = rc_get_style(widget);
+    if (proto) {
+        obj_ref(proto);
+        g_default_proto_gtk_style = proto;
+        obj_ref(proto);
+        g_default_pinned_gtk_style = style_attach(proto, g_root_gdk_window);
+        set_style(widget, proto);
+    }
+}
+
 static void kgtk_pin_cache_entry_style(KRcStyleCacheEntry* e, KWidgetRef widget) {
     if (!e || e->proto_gtk_style || !g_root_gdk_window || !widget) return;
     fn_gtk_rc_get_style rc_get_style = (fn_gtk_rc_get_style)resolve_sym("gtk_rc_get_style");
@@ -2126,9 +2795,8 @@ static void kgtk_apply_rc_style_key(KWidgetRef widget, uint32_t new_key, uint32_
     if (new_key & (1u << 6)) {
         fn_gtk_widget_modify_fg mod_fg = (fn_gtk_widget_modify_fg)resolve_sym("gtk_widget_modify_fg");
         if (mod_fg) {
-            uint8_t fg_gray = (uint8_t)((new_key >> 8) & 0xFFu);
-            uint16_t c16 = ((uint16_t)fg_gray << 8) | fg_gray;
-            KGdkColor color = { 0, c16, c16, c16 };
+            uint8_t fg_code = (uint8_t)((new_key >> 8) & 0xFFu);
+            KGdkColor color = kgtk_make_gdk_color(fg_code);
             mod_fg(widget, 0, &color);
             mod_fg(widget, 1, &color);
             mod_fg(widget, 2, &color);
@@ -2137,15 +2805,11 @@ static void kgtk_apply_rc_style_key(KWidgetRef widget, uint32_t new_key, uint32_
     if (new_key & (1u << 7)) {
         fn_gtk_widget_modify_bg mod_bg = (fn_gtk_widget_modify_bg)resolve_sym("gtk_widget_modify_bg");
         if (mod_bg) {
-            uint8_t bg_gray = (uint8_t)((new_key >> 16) & 0xFFu);
-            uint16_t c16 = ((uint16_t)bg_gray << 8) | bg_gray;
-            KGdkColor color = { 0, c16, c16, c16 };
+            uint8_t bg_code = (uint8_t)((new_key >> 16) & 0xFFu);
+            KGdkColor color = kgtk_make_gdk_color(bg_code);
             mod_bg(widget, 0, &color);
+            mod_bg(widget, 1, &color);
             mod_bg(widget, 2, &color);
-            uint8_t active_gray = kgtk_quantize_eink_gray(bg_gray > 128 ? (bg_gray - 34) : (bg_gray + 34));
-            uint16_t ac16 = ((uint16_t)active_gray << 8) | active_gray;
-            KGdkColor active_color = { 0, ac16, ac16, ac16 };
-            mod_bg(widget, 1, &active_color);
         }
     }
 
@@ -2178,7 +2842,7 @@ static uint32_t kgtk_get_widget_rc_key(KWidgetRef widget) {
 
 void kgtk_widget_modify_bg_gray(KWidgetRef widget, int state, uint8_t gray_level) {
     if (!widget) return;
-    gray_level = kgtk_quantize_eink_gray(gray_level);
+    gray_level = kgtk_normalize_color_code(gray_level);
     if (state == 0) {
         uint32_t old_key = kgtk_get_widget_rc_key(widget);
         uint32_t new_key = (old_key & ~(0xFFu << 16)) | (1u << 7) | ((uint32_t)gray_level << 16);
@@ -2187,15 +2851,14 @@ void kgtk_widget_modify_bg_gray(KWidgetRef widget, int state, uint8_t gray_level
     }
     fn_gtk_widget_modify_bg fn = (fn_gtk_widget_modify_bg)resolve_sym("gtk_widget_modify_bg");
     if (fn) {
-        uint16_t c16 = ((uint16_t)gray_level << 8) | gray_level;
-        KGdkColor color = { 0, c16, c16, c16 };
+        KGdkColor color = kgtk_make_gdk_color(gray_level);
         fn(widget, state, &color);
     }
 }
 
 void kgtk_widget_modify_fg_gray(KWidgetRef widget, int state, uint8_t gray_level) {
     if (!widget) return;
-    gray_level = kgtk_quantize_eink_gray(gray_level);
+    gray_level = kgtk_normalize_color_code(gray_level);
     if (state == 0) {
         uint32_t old_key = kgtk_get_widget_rc_key(widget);
         uint32_t new_key = (old_key & ~(0xFFu << 8)) | (1u << 6) | ((uint32_t)gray_level << 8);
@@ -2204,8 +2867,7 @@ void kgtk_widget_modify_fg_gray(KWidgetRef widget, int state, uint8_t gray_level
     }
     fn_gtk_widget_modify_fg fn = (fn_gtk_widget_modify_fg)resolve_sym("gtk_widget_modify_fg");
     if (fn) {
-        uint16_t c16 = ((uint16_t)gray_level << 8) | gray_level;
-        KGdkColor color = { 0, c16, c16, c16 };
+        KGdkColor color = kgtk_make_gdk_color(gray_level);
         fn(widget, state, &color);
     }
 }
@@ -2222,7 +2884,7 @@ void kgtk_widget_set_font_and_fg(KWidgetRef widget, const char* font_desc_str, b
         }
     }
     if (has_fg) {
-        uint8_t q_fg = kgtk_quantize_eink_gray(fg_gray);
+        uint8_t q_fg = kgtk_normalize_color_code(fg_gray);
         new_key = (new_key & ~(0xFFu << 8)) | (1u << 6) | ((uint32_t)q_fg << 8);
     }
     kgtk_apply_rc_style_key(widget, new_key, old_key);
@@ -2355,7 +3017,7 @@ static int c_cairo_expose_trampoline(KWidgetRef widget, void* event, void* data)
         fn_gdk_gc_new gc_new = (fn_gdk_gc_new)resolve_sym("gdk_gc_new");
         fn_g_object_unref unref = (fn_g_object_unref)resolve_sym("g_object_unref");
         if (pixmap_new && draw_drawable && gc_new && g_cairo.new_path && g_cairo.rectangle && g_cairo.fill) {
-            uint8_t q_bg = kgtk_quantize_eink_gray(b->clear_bg_gray);
+            uint8_t q_bg = kgtk_normalize_color_code(b->clear_bg_gray);
             uint64_t full_key = b->cache_key
                 ^ ((uint64_t)(uint32_t)alloc.width << 48)
                 ^ ((uint64_t)(uint32_t)alloc.height << 36)
@@ -2505,17 +3167,270 @@ void kcairo_rounded_rect(KCairoRef cr, double x, double y, double w, double h, d
 void kcairo_set_gray(KCairoRef cr, uint8_t gray) {
     kcairo_ensure_resolved();
     if (cr && g_cairo.set_source_rgb) {
-        uint8_t q = kgtk_quantize_eink_gray(gray);
-        double g = (double)q / 255.0;
-        g_cairo.set_source_rgb(cr, g, g, g);
+        uint8_t r, g, b;
+        kgtk_resolve_color_rgb(gray, &r, &g, &b);
+        g_cairo.set_source_rgb(cr, (double)r / 255.0, (double)g / 255.0, (double)b / 255.0);
+    }
+}
+
+// --- Server-Side X11 GdkPixmap Cache for GtkLabel & Offscreen View Slot Pre-Renderer ---
+
+typedef struct {
+    int x;
+    int y;
+    int width;
+    int height;
+} KPangoRectangle;
+
+typedef void (KGTK_ABI *fn_gtk_widget_get_child_requisition)(KWidgetRef, KGtkRequisition*);
+typedef void (KGTK_ABI *fn_gtk_misc_get_alignment)(KWidgetRef, float*, float*);
+typedef void (KGTK_ABI *fn_pango_layout_get_pixel_extents)(void*, KPangoRectangle*, KPangoRectangle*);
+typedef void (KGTK_ABI *fn_gdk_draw_layout_with_colors)(void*, void*, int, int, void*, const KGdkColor*, const KGdkColor*);
+typedef void (KGTK_ABI *fn_gtk_widget_size_request)(KWidgetRef, KGtkRequisition*);
+typedef int (KGTK_ABI *fn_gtk_events_pending)(void);
+
+static bool c_label_render_pixmap(KWidgetRef widget, KLabelRenderState* st) {
+    if (!widget || !st) return false;
+    kcairo_ensure_resolved();
+    if (!g_cairo.get_window || !g_cairo.get_allocation || !g_cairo.gdk_create || !g_cairo.destroy || !g_cairo.new_path || !g_cairo.rectangle || !g_cairo.fill) {
+        return false;
+    }
+
+    void* gdk_win = g_cairo.get_window(widget);
+    if (!gdk_win) gdk_win = g_root_gdk_window;
+    if (!gdk_win) return false;
+
+    KGtkAllocation alloc = { 0, 0, 0, 0 };
+    g_cairo.get_allocation(widget, &alloc);
+    if (alloc.width <= 0 || alloc.height <= 0 || alloc.width > 2048 || alloc.height > 2480) {
+        return false;
+    }
+
+    fn_gtk_label_get_layout get_layout = (fn_gtk_label_get_layout)resolve_sym("gtk_label_get_layout");
+    fn_pango_layout_get_width get_pango_w = (fn_pango_layout_get_width)resolve_sym("pango_layout_get_width");
+    fn_pango_layout_set_width set_pango_w = (fn_pango_layout_set_width)resolve_sym("pango_layout_set_width");
+    fn_pango_layout_set_ellipsize set_ellipsize = (fn_pango_layout_set_ellipsize)resolve_sym("pango_layout_set_ellipsize");
+    fn_pango_layout_set_height set_height = (fn_pango_layout_set_height)resolve_sym("pango_layout_set_height");
+    fn_pango_layout_get_pixel_extents get_extents = (fn_pango_layout_get_pixel_extents)resolve_sym("pango_layout_get_pixel_extents");
+    fn_gtk_misc_get_alignment get_misc_align = (fn_gtk_misc_get_alignment)resolve_sym("gtk_misc_get_alignment");
+    fn_gdk_draw_layout_with_colors draw_layout = (fn_gdk_draw_layout_with_colors)resolve_sym("gdk_draw_layout_with_colors");
+    fn_gdk_pixmap_new pixmap_new = (fn_gdk_pixmap_new)resolve_sym("gdk_pixmap_new");
+    fn_gdk_gc_new gc_new = (fn_gdk_gc_new)resolve_sym("gdk_gc_new");
+    fn_g_object_unref unref = (fn_g_object_unref)resolve_sym("g_object_unref");
+    if (!get_layout || !draw_layout || !pixmap_new || !gc_new) return false;
+
+    void* layout = get_layout(widget);
+    if (!layout) return false;
+
+    if (st->wrap) {
+        c_label_apply_wrap_and_limits(widget, layout);
+    }
+
+    int cur_pango_w = get_pango_w ? get_pango_w(layout) : -1;
+    uint32_t cur_style_key = kgtk_get_widget_rc_key(widget);
+
+    if (st->pixmap &&
+        st->pixmap_w == alloc.width &&
+        st->pixmap_h == alloc.height &&
+        st->rendered_text_version == st->text_version &&
+        st->rendered_style_key == cur_style_key &&
+        st->rendered_pango_w == cur_pango_w) {
+        return true;
+    }
+
+    if (st->pixmap && (st->pixmap_w != alloc.width || st->pixmap_h != alloc.height)) {
+        if (unref) unref(st->pixmap);
+        st->pixmap = NULL;
+    }
+    if (!st->pixmap) {
+        st->pixmap = pixmap_new(gdk_win, alloc.width, alloc.height, -1);
+        st->pixmap_w = alloc.width;
+        st->pixmap_h = alloc.height;
+    }
+    if (!st->pixmap) return false;
+
+    uint8_t q_bg = kgtk_normalize_color_code(st->has_bg_gray ? st->bg_gray : 0xFF);
+    void* pcr = g_cairo.gdk_create(st->pixmap);
+    if (!pcr) return false;
+    kcairo_set_gray(pcr, q_bg);
+    g_cairo.new_path(pcr);
+    g_cairo.rectangle(pcr, 0.0, 0.0, (double)alloc.width, (double)alloc.height);
+    g_cairo.fill(pcr);
+    g_cairo.destroy(pcr);
+
+    if (g_cached_blit_win != gdk_win || !g_cached_blit_gc) {
+        if (g_cached_blit_gc && unref) unref(g_cached_blit_gc);
+        g_cached_blit_gc = gc_new(gdk_win);
+        g_cached_blit_win = gdk_win;
+    }
+    if (!g_cached_blit_gc) return false;
+
+    bool restored_single_line = false;
+    KPangoRectangle logical = { 0, 0, alloc.width, alloc.height };
+    if (get_extents) {
+        get_extents(layout, NULL, &logical);
+    }
+    if (!st->wrap && logical.width > alloc.width && alloc.width > 8 && set_pango_w && set_ellipsize) {
+        set_pango_w(layout, alloc.width * 1024);
+        set_ellipsize(layout, 3); // PANGO_ELLIPSIZE_END
+        if (set_height) set_height(layout, -1);
+        if (get_extents) {
+            get_extents(layout, NULL, &logical);
+        }
+        restored_single_line = true;
+    }
+
+    float xalign = 0.0f, yalign = 0.0f;
+    if (get_misc_align) {
+        get_misc_align(widget, &xalign, &yalign);
+    }
+    int diff_w = alloc.width - logical.width;
+    int off_x = diff_w >= 0
+        ? (int)((double)diff_w * (double)xalign + 0.5)
+        : 0;
+    int draw_x = off_x - logical.x;
+    int draw_y = ((alloc.height > logical.height)
+        ? (int)((double)(alloc.height - logical.height) * (double)yalign + 0.5)
+        : 0) - logical.y;
+
+    uint8_t fg_gray = (cur_style_key & (1u << 6))
+        ? (uint8_t)((cur_style_key >> 8) & 0xFFu)
+        : st->fg_gray;
+    KGdkColor fg_color = kgtk_make_gdk_color(fg_gray);
+
+    draw_layout(st->pixmap, g_cached_blit_gc, draw_x, draw_y, layout, &fg_color, NULL);
+
+    if (restored_single_line) {
+        set_pango_w(layout, -1);
+        set_ellipsize(layout, 0);
+    }
+
+    st->rendered_text_version = st->text_version;
+    st->rendered_style_key = cur_style_key;
+    st->rendered_pango_w = cur_pango_w;
+    return true;
+}
+
+static int c_label_expose_cached(KWidgetRef widget, void* event, void* data) {
+    KLabelRenderState* st = (KLabelRenderState*)data;
+    if (!widget || !st) return 0;
+
+    if (!c_label_render_pixmap(widget, st) || !st->pixmap) {
+        return 0; // Fall back to default gtk_label_expose
+    }
+
+    fn_gdk_draw_drawable draw_drawable = (fn_gdk_draw_drawable)resolve_sym("gdk_draw_drawable");
+    if (!draw_drawable || !g_cairo.get_window || !g_cairo.get_allocation || !g_cached_blit_gc) {
+        return 0;
+    }
+
+    void* gdk_win = g_cairo.get_window(widget);
+    if (!gdk_win) return 0;
+
+    KGtkAllocation alloc = { 0, 0, 0, 0 };
+    g_cairo.get_allocation(widget, &alloc);
+
+    int x0 = alloc.x;
+    int y0 = alloc.y;
+    int x1 = alloc.x + alloc.width;
+    int y1 = alloc.y + alloc.height;
+    if (event) {
+        KGdkEventExpose* ev = (KGdkEventExpose*)event;
+        if (ev->area.width > 0 && ev->area.height > 0) {
+            if (ev->area.x > x0) x0 = ev->area.x;
+            if (ev->area.y > y0) y0 = ev->area.y;
+            if (ev->area.x + ev->area.width < x1) x1 = ev->area.x + ev->area.width;
+            if (ev->area.y + ev->area.height < y1) y1 = ev->area.y + ev->area.height;
+        }
+    }
+    if (x1 > x0 && y1 > y0) {
+        draw_drawable(gdk_win, g_cached_blit_gc, st->pixmap, x0 - alloc.x, y0 - alloc.y, x0, y0, x1 - x0, y1 - y0);
+    }
+    return 1; // Stop propagation: bypass GTK's slow XGetImage/XPutImage gtk_label_expose!
+}
+
+static void kgtk_attach_label_render_state(KWidgetRef label) {
+    if (!label) return;
+    KLabelRenderState* st = c_get_or_create_label_render_state(label);
+    fn_g_signal_connect_data conn = (fn_g_signal_connect_data)resolve_sym("g_signal_connect_data");
+    if (st && conn) {
+        conn(label, "expose-event", (void*)c_label_expose_cached, st, NULL, 0);
+    }
+}
+
+static void kgtk_bump_label_text_version(KWidgetRef label) {
+    KLabelRenderState* st = c_get_or_create_label_render_state(label);
+    if (st) {
+        st->text_version += 1;
+    }
+}
+
+void kgtk_label_set_bg_gray(KWidgetRef label, uint8_t bg_gray) {
+    KLabelRenderState* st = c_get_or_create_label_render_state(label);
+    if (!st) return;
+    uint8_t q_bg = kgtk_normalize_color_code(bg_gray);
+    if (!st->has_bg_gray || st->bg_gray != q_bg) {
+        st->has_bg_gray = true;
+        st->bg_gray = q_bg;
+        st->rendered_text_version = 0;
+    }
+}
+
+void kgtk_prerender_offscreen_slot(
+    KWidgetRef window,
+    KWidgetRef root_container,
+    KWidgetRef slot_widget,
+    const KWidgetRef* labels,
+    int label_count
+) {
+    if (!window || !root_container || !slot_widget) return;
+    fn_gtk_widget_size_request size_req = (fn_gtk_widget_size_request)resolve_sym("gtk_widget_size_request");
+    fn_gtk_widget_size_allocate size_alloc = (fn_gtk_widget_size_allocate)resolve_sym("gtk_widget_size_allocate");
+    fn_gtk_widget_get_allocation get_alloc = (fn_gtk_widget_get_allocation)resolve_sym("gtk_widget_get_allocation");
+    fn_gtk_events_pending events_pending = (fn_gtk_events_pending)resolve_sym("gtk_events_pending");
+    fn_g_object_get_data get_data = (fn_g_object_get_data)resolve_sym("g_object_get_data");
+    if (!size_req || !size_alloc || !get_alloc) return;
+
+    KGtkAllocation root_alloc = { 0, 0, g_window_default_w, g_window_default_h };
+    get_alloc(root_container, &root_alloc);
+    if (root_alloc.width <= 60 || root_alloc.height <= 60) {
+        root_alloc.x = 0;
+        root_alloc.y = 0;
+        root_alloc.width = g_window_default_w > 0 ? g_window_default_w : 1236;
+        root_alloc.height = g_window_default_h > 0 ? g_window_default_h : 1648;
+    }
+
+    for (int pass = 0; pass < 2; ++pass) {
+        g_label_wrap_queued_resize = false;
+        KGtkRequisition req = { 0, 0 };
+        size_req(slot_widget, &req);
+        size_alloc(slot_widget, &root_alloc);
+        if (!g_label_wrap_queued_resize) break;
+    }
+    fn_gtk_container_check_resize check_resize = (fn_gtk_container_check_resize)resolve_sym("gtk_container_check_resize");
+    if (check_resize) {
+        check_resize(window);
+    }
+
+    if (labels && label_count > 0 && get_data) {
+        for (int i = 0; i < label_count; ++i) {
+            if (events_pending && events_pending()) break;
+            KWidgetRef lbl = labels[i];
+            if (!lbl) continue;
+            KLabelRenderState* st = (KLabelRenderState*)get_data(lbl, "kindle-label-render-state");
+            if (st) {
+                c_label_render_pixmap(lbl, st);
+            }
+        }
     }
 }
 
 void kcairo_set_gray_alpha(KCairoRef cr, uint8_t gray, double alpha) {
     kcairo_ensure_resolved();
     if (cr && g_cairo.set_source_rgba) {
-        double g = (double)gray / 255.0;
-        g_cairo.set_source_rgba(cr, g, g, g, alpha);
+        uint8_t r, g, b;
+        kgtk_resolve_color_rgb(gray, &r, &g, &b);
+        g_cairo.set_source_rgba(cr, (double)r / 255.0, (double)g / 255.0, (double)b / 255.0, alpha);
     }
 }
 
@@ -2795,29 +3710,14 @@ static int c_styled_box_expose(KWidgetRef widget, void* event, void* data) {
         g_cairo.fill(cr);
     }
 
-    if (st->is_interactive && st->is_pressed && (abs_sx > 0 || abs_sy > 0)) {
-        // Tactile shift toward the shadow when pressed
-        box_x += (st->shadow_x > 0 ? 1 : 0);
-        box_y += (st->shadow_y > 0 ? 1 : 0);
-    }
-
-    if (st->has_bg || (st->is_interactive && st->is_pressed)) {
-        uint8_t effective_bg = st->has_bg ? st->bg_gray : 0xEE;
-        if (st->is_interactive && st->is_pressed) {
-            if (effective_bg > 128) {
-                effective_bg = (effective_bg > 48) ? (uint8_t)(effective_bg - 48) : 0x99;
-            } else {
-                effective_bg = (uint8_t)(effective_bg + 56);
-            }
-        }
+    if (st->has_bg) {
         kcairo_rectilinear_rounded_box_path(cr, box_x, box_y, box_w, box_h, rtl, rtr, rbr, rbl);
-        kcairo_set_gray(cr, effective_bg);
+        kcairo_set_gray(cr, st->bg_gray);
         g_cairo.fill(cr);
     }
 
     if (st->border_width > 0) {
-        int bw = st->border_width + (st->is_interactive && st->is_pressed ? 1 : 0);
-        kcairo_rectilinear_rounded_border_path(cr, box_x, box_y, box_w, box_h, rtl, rtr, rbr, rbl, bw);
+        kcairo_rectilinear_rounded_border_path(cr, box_x, box_y, box_w, box_h, rtl, rtr, rbr, rbl, st->border_width);
         kcairo_set_gray(cr, st->border_gray);
         g_cairo.fill(cr);
     }
@@ -2930,7 +3830,7 @@ static KWidgetRef create_styled_box_internal(
     if (child) kgtk_container_add(align, child);
 
     KWidgetRef host = align;
-    if (is_interactive) {
+    if (is_interactive && is_enabled) {
         KWidgetRef eb = kgtk_event_box_new();
         if (eb) {
             if (set_vis) set_vis(eb, 0);
@@ -3283,7 +4183,8 @@ KWidgetRef kgtk_custom_slider_new(
     KIdleCallback on_drag_end,
     void* drag_user_data
 ) {
-    KWidgetRef eb = kgtk_event_box_new();
+    bool interactive = (on_value_changed != NULL && value_user_data != NULL);
+    KWidgetRef eb = interactive ? kgtk_event_box_new() : kgtk_alignment_new(0.5f, 0.5f, 1.0f, 1.0f);
     fn_gtk_event_box_set_visible_window set_vis = (fn_gtk_event_box_set_visible_window)resolve_sym("gtk_event_box_set_visible_window");
     fn_gtk_event_box_set_above_child set_above = (fn_gtk_event_box_set_above_child)resolve_sym("gtk_event_box_set_above_child");
     fn_gtk_widget_add_events add_events = (fn_gtk_widget_add_events)resolve_sym("gtk_widget_add_events");
@@ -3291,9 +4192,11 @@ KWidgetRef kgtk_custom_slider_new(
     fn_g_object_set_data_full set_data = (fn_g_object_set_data_full)resolve_sym("g_object_set_data_full");
     if (!eb || !conn) return eb;
 
-    if (set_vis) set_vis(eb, 0);
-    if (set_above) set_above(eb, 1);
-    if (add_events) add_events(eb, 2 | 4 | 16 | 32 | 256 | 512);
+    if (interactive) {
+        if (set_vis) set_vis(eb, 0);
+        if (set_above) set_above(eb, 1);
+        if (add_events) add_events(eb, 2 | 4 | 16 | 32 | 256 | 512);
+    }
 
     kgtk_widget_set_size_request(eb, -1, 64);
 
@@ -3314,9 +4217,11 @@ KWidgetRef kgtk_custom_slider_new(
             set_data(eb, "kindle-custom-slider-state", st, free);
         }
         conn(eb, "expose-event", (void*)c_custom_slider_expose, st, NULL, 0);
-        conn(eb, "button-press-event", (void*)c_custom_slider_press, st, NULL, 0);
-        conn(eb, "motion-notify-event", (void*)c_custom_slider_motion, st, NULL, 0);
-        conn(eb, "button-release-event", (void*)c_custom_slider_release, st, NULL, 0);
+        if (interactive) {
+            conn(eb, "button-press-event", (void*)c_custom_slider_press, st, NULL, 0);
+            conn(eb, "motion-notify-event", (void*)c_custom_slider_motion, st, NULL, 0);
+            conn(eb, "button-release-event", (void*)c_custom_slider_release, st, NULL, 0);
+        }
     }
     return eb;
 }
@@ -3840,21 +4745,35 @@ static void c_webview_load_finished(KWidgetRef web_view, void* frame, void* data
 }
 
 bool kgtk_webkit_available(void) {
-    if (!g_webkit_lib) {
-        const char* webkit_candidates[] = {
-            "libwebkitgtk-1.0.so.0",
-            "/usr/lib/libwebkitgtk-1.0.so.0",
-            "libwebkit-1.0.so.2",
-            "/usr/lib/libwebkit-1.0.so.2",
-            "libwebkitgtk-1.0.so",
-            NULL
-        };
-        for (int i = 0; webkit_candidates[i] != NULL; ++i) {
-            g_webkit_lib = dlopen(webkit_candidates[i], RTLD_LAZY | RTLD_GLOBAL);
-            if (g_webkit_lib) break;
-        }
-    }
+    kgtk_ensure_webkit_loaded();
     return resolve_sym("webkit_web_view_new") != NULL;
+}
+
+static void kgtk_release_webview_slot(KWebViewSlot* slot) {
+    if (!slot || !slot->in_use) return;
+    if (slot->last_url) {
+        free(slot->last_url);
+        slot->last_url = NULL;
+    }
+    if (slot->last_html) {
+        free(slot->last_html);
+        slot->last_html = NULL;
+    }
+    if (slot->scrolled_window) {
+        fn_gtk_widget_get_parent get_parent = (fn_gtk_widget_get_parent)resolve_sym("gtk_widget_get_parent");
+        fn_g_object_unref unref = (fn_g_object_unref)resolve_sym("g_object_unref");
+        if (get_parent) {
+            KWidgetRef parent = get_parent(slot->scrolled_window);
+            if (parent) {
+                kgtk_container_remove(parent, slot->scrolled_window);
+            }
+        }
+        kgtk_widget_destroy(slot->scrolled_window);
+        if (unref) unref(slot->scrolled_window);
+        slot->scrolled_window = NULL;
+        slot->web_view = NULL;
+    }
+    slot->in_use = false;
 }
 
 KWidgetRef kgtk_webview_obtain(
@@ -3890,7 +4809,10 @@ KWidgetRef kgtk_webview_obtain(
                 break;
             }
         }
-        if (!slot) slot = &g_webview_slots[0];
+        if (!slot) {
+            slot = &g_webview_slots[0];
+            kgtk_release_webview_slot(slot);
+        }
 
         KWidgetRef sw = kgtk_scrolled_window_new();
         KWidgetRef wv = wv_new ? wv_new() : NULL;

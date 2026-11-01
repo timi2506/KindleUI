@@ -6,8 +6,6 @@ import Glibc
 #elseif canImport(Darwin)
 import Darwin
 #endif
-import Foundation
-import CKindleGTK
 
 /// Provides access to Kindle hardware services via Amazon's LIPC bus (`liblipc.so`),
 /// automatic MediaTek `hwtcon` E-Ink panel refreshes (`/dev/fb0`), and device telemetry.
@@ -33,13 +31,35 @@ public final class KindleDevice: @unchecked Sendable {
         return screenH > 0 ? Int(screenH) : 1600
     }
 
+    private var colorFlagChecked = false
+
+    /// Returns `true` when running on a Kaleido 3 Colorsoft display (`Kindle Colorsoft` or `Kindle Scribe Colorsoft`)
+    /// or when simulated color mode (`--color` / `KINDLEUI_COLOR=1`) is enabled.
+    public var isColorDisplay: Bool {
+        if !colorFlagChecked {
+            colorFlagChecked = true
+            let args = CommandLine.arguments
+            if args.contains("--color") || args.contains("--colorsoft") {
+                kgtk_set_simulated_color_display(true)
+            } else if args.contains("--mono") || args.contains("--monochrome") {
+                kgtk_set_simulated_color_display(false)
+            }
+        }
+        return kgtk_is_color_display()
+    }
+
+    /// Overrides Colorsoft display detection (for previews or tests).
+    public func setSimulatedColorDisplay(_ isColor: Bool) {
+        colorFlagChecked = true
+        kgtk_set_simulated_color_display(isColor)
+    }
+
     private var simulatedFrontlight: Int = 12
     private var simulatedWarmth: Int = 6
     private var simulatedBattery: Int = 87
     private var simulatedPreventScreenSaver: Bool = false
     private var simulatedAirplaneMode: Bool = false
     private var simulatedOrientationLock: String = "U"
-    private var simulatedKeyboardVisible: Bool = false
     private var cachedNativeKeyboardPhysHeight: Int? = nil
     private var activeNativeKeyboardAppID: String? = nil
 
@@ -328,14 +348,12 @@ public final class KindleDevice: @unchecked Sendable {
     /// On Kindle hardware (`liblipc.so`), this opens the native Kindle OS keyboard (`com.lab126.keyboard`)
     /// on the `KB` layer (`<appID>:<layout>:0`); on desktop simulators, it falls back to the built-in E-Ink keyboard.
     public func showKeyboard(layout: String = "abc", useSystemLipcKeyboard: Bool = true) {
-        simulatedKeyboardVisible = true
         preferNativeSystemKeyboard = useSystemLipcKeyboard
         KindleKeyboardManager.shared.showDefault(layout: layout)
     }
 
     /// Dismisses the Kindle on-screen virtual keyboard (`com.lab126.keyboard` and Input Dock).
     public func hideKeyboard() {
-        simulatedKeyboardVisible = false
         KindleKeyboardManager.shared.dismiss()
         closeNativeSystemKeyboard()
     }
