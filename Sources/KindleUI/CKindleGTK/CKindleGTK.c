@@ -4741,7 +4741,7 @@ static int c_webview_nav_policy_decision(
     const char* req_uri = get_req_uri(request);
     if (!req_uri || !req_uri[0]) return 0;
 
-    // Intercept custom URL schemes (e.g., fynncloud://auth?code=...) for OAuth callbacks
+    // Intercept custom URL schemes (e.g., myapp://auth?code=...) for OAuth callbacks
     bool is_standard =
         strncmp(req_uri, "http://", 7) == 0 ||
         strncmp(req_uri, "https://", 8) == 0 ||
