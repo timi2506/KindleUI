@@ -1,133 +1,107 @@
-# `KindleUI` — Declarative SwiftUI-Style Framework for Amazon Kindle (ARMv7 Linux)
+# KindleUI
 
-`KindleUI` is a declarative, SwiftUI-inspired UI framework for Amazon Kindle E-Ink devices (Paperwhite, Oasis, Basic, Scribe, and older soft-float models), backed by GTK+-2.0, Cairo, Pango, WebKitGTK, and LIPC (`Sources/KindleUI/CKindleGTK`), and cross-compiled from macOS/Linux using Docker and the [swift-embedded-linux/armhf-debian](https://github.com/swift-embedded-linux/armhf-debian) SDK.
+A SwiftUI-like declarative UI library for jailbroken Amazon Kindles.
 
----
+KindleUI renders native GTK 2 / Cairo views on the Kindle's X11 display and handles E-Ink refresh modes, LIPC system events, touch gestures, and on-screen keyboard input out of the box. It also includes a local browser preview server so you can build and test layouts on macOS or Linux without deploying to a device on every change.
 
-## Example Applications (`Examples/`)
+## Usage
 
-| Binary | Source Location | Application ID | Description |
-| :--- | :--- | :--- | :--- |
-| **`KindleWiki`** | `Examples/KindleWiki/` | `org.kindlemodding.kindlewiki` | **Wikipedia & Wiktionary E-Ink Reader**: Paginated article reader with floated lead infocards, inline figures & tables, live search, featured feed, separate **Bookmark (`Save`)** & **Offline Download (`Download`)** controls, reading history, and typography customization. |
-| **`KindleShowcase`** | `Examples/KindleShowcase/` | `org.kindlemodding.KindleShowcase` | **Comprehensive `KindleUI` Showcase App**: 6-tab interactive showcase covering Controls & Overlays, Navigation & Lists, Freehand & Vector Canvas, Embedded WebKitGTK Browser, Declarative Charts & `@Query` Data, and Split-View Settings. |
-
----
-
-## Using KindleUI in Your Own Package
+Add KindleUI to your `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/KindleModding/KindleUI", from: "1.0.0")
+    .package(url: "https://github.com/timi2506/KindleUI.git", branch: "main")
 ],
 targets: [
-    .executableTarget(name: "MyApp", dependencies: [
-        .product(name: "KindleUI", package: "KindleUI")
-    ])
+    .executableTarget(
+        name: "MyApp",
+        dependencies: [.product(name: "KindleUI", package: "KindleUI")]
+    )
 ]
 ```
 
----
+Write views just like you would in SwiftUI:
 
-## Project Layout
+```swift
+import KindleUI
 
-```text
-.
-├── Package.swift                              # SwiftPM manifest (exports only the KindleUI library)
-├── build.sh                                   # Docker cross-compilation pipeline (armhf + softfp, glibc >= 2.20)
-├── test.sh                                    # Host unit tests + example build runner
-├── Dockerfile                                 # Swift ARMv7 cross-compiler container definition
-├── Sources/
-│   └── KindleUI/                              # SwiftUI-style declarative framework organized by domain:
-│       ├── CKindleGTK/                        # C runtime bridge for GTK+-2.0, Cairo, Pango, WebKitGTK, WebP & LIPC
-│       ├── App/                               # App, Scene, WindowGroup, KindleWindowConfig
-│       ├── Core/                              # View, ViewBuilder, RenderNode, RenderTreeDiff, Transaction
-│       ├── State/                             # State, Binding, StateObject, ObservedObject, Environment, AppStorage, SwiftData (@Query)
-│       ├── Styling/                           # EInkColor, KindleFont, KindleTheme, ControlStyles, KindleIconName
-│       ├── Layout/                            # VStack, HStack, ZStack, Spacer, Divider, Grid, ScrollView, GeometryReader, Layout
-│       ├── Views/                             # Text, Icon, Image, AsyncImage, Containers, List, ForEach, Table, ReaderViews, WebView
-│       ├── Controls/                          # Button, Toggle, Slider, Stepper, ProgressView, TextField, TextEditor, Picker, DatePicker
-│       ├── Navigation/                        # NavigationStack, NavigationSplitView, TabView, Presentation (.sheet, .alert, .popover)
-│       ├── Modifiers/                         # ViewModifier, LayoutModifiers, SearchAndInputModifiers, Gestures
-│       ├── Drawing/                           # Shape, Path, Gradients, Canvas, Charts
-│       ├── Hardware/                          # KindleDevice, KindleEPD, KindleHTTP
-│       ├── Rendering/                         # GTK2Renderer, GTKStyledWidgets, GTKSignalTarget
-│       └── Previews/                          # KindlePreview, KindlePreviewServer, KindlePreviewHTMLRenderer, KindlePreviewStudioUI
-├── Examples/                                  # Separate package (not part of the KindleUI library package)
-│   ├── Package.swift                          # Depends on KindleUI via path: ".."
-│   ├── KindleShowcase/                        # 6-tab KindleUI component & API showcase app
-│   ├── KindleWiki/                            # Wikipedia & Wiktionary E-Ink reader app
-│   └── Tests/KindleWikiTests/                 # KindleWiki unit tests
-└── Tests/
-    └── KindleUITests/                         # KindleUI unit tests
+@main
+struct CounterApp: App {
+    var applicationID: String { "org.example.counter" }
+
+    var body: some Scene {
+        WindowGroup("Counter") {
+            CounterView()
+        }
+    }
+}
+
+struct CounterView: View {
+    @State private var count = 0
+
+    var body: some View {
+        VStack(spacing: 16) {
+            Text("Count: \(count)")
+                .font(.title)
+
+            HStack(spacing: 12) {
+                Button("Decrement") { count -= 1 }
+                Button("Increment") { count += 1 }
+                    .buttonStyle(.borderedProminent)
+            }
+        }
+        .padding(24)
+    }
+}
 ```
 
----
+## Local Preview
 
-## Persistent App Data on Kindle
-
-Each `KindleUI` application declares a unique `applicationID` (e.g., `org.kindlemodding.kindlewiki`) via `App.applicationID` / `WindowGroup(id:)`. All persistent files are automatically scoped per app under:
-
-- **On Kindle**: `/mnt/us/appdata/<applicationID>/`
-  - `storage.json` (`@AppStorage` preferences)
-  - `models.json` (`@Query` / `ModelContainer` persistent models)
-  - `images/` (`AsyncImageCache` cached images)
-- **On macOS / Desktop Simulator**: `/tmp/kindleui-appdata/<applicationID>/`
-
----
-
-## Build & Test Instructions
-
-### 1. Local Build, Unit Tests & Live Browser Preview Studio (macOS / Linux)
+Pass `--preview` when running an app on macOS or Linux to start the local preview server on `http://127.0.0.1:8080`:
 
 ```sh
-# KindleUI library tests
-swift test
-
-# Example apps (separate package in Examples/)
 cd Examples
-swift test
-swift run KindleWiki --preview
 swift run KindleShowcase --preview
+swift run KindleWiki --preview
 ```
 
-Passing `--preview` (with optional `--port <port>` and `--open`) starts `KindlePreviewServer` at `http://127.0.0.1:8080`, rendering the exact `GTK2Renderer` layout grid, Pango typography scaling, Cairo button/toggle/container styles, `KindleCanvas` pixel buffers, and live `KindleHTTP` / `AsyncImage` updates over Server-Sent Events.
+You can also pass `--port <port>` or `--open` to open the browser automatically.
 
-### 2. Cross-Compile for Kindle (`armhf` and `softfp`)
+## Building for Kindle
 
-Make sure Docker Desktop (or OrbStack / Docker Engine) is running, then execute:
+Requires Docker. The build script cross-compiles static-Swift ARMv7 binaries for both `armhf` (firmware 5.16.3+) and `softfp` (older firmware):
 
 ```sh
-./build.sh                          # build every executable product in Examples/
-./build.sh MyApp                    # build only the named product(s)
-./build.sh -p path/to/pkg [APP ...] # build apps from your own package (must depend on KindleUI)
+./build.sh                          # build all apps in Examples/
+./build.sh KindleWiki               # build a specific target
+./build.sh -p path/to/pkg MyApp     # build an external package
 ```
 
-`./build.sh` builds static-Swift-stdlib ARMv7 binaries with glibc `>= 2.20` compatibility shims for both ABIs. For each app `<APP>` it writes to `dist/`:
+Compiled binaries are written to `dist/<App>` (`armhf`) and `dist/<App>-softfp` (`softfp`).
 
-- **Hard-Float (`armhf` — Kindle FW `>= 5.16.3`, `/lib/ld-linux-armhf.so.3`)**: `dist/<APP>`
-- **Soft-Float (`softfp` — Kindle FW `< 5.16.3`, `/lib/ld-linux.so.3`)**: `dist/<APP>-softfp`
-
-### 3. Deploy & Run on a Kindle or QEMU Emulator
-
-#### Over SSH (Physical Kindle or Running QEMU Emulator)
+To run on a Kindle over SSH:
 
 ```sh
-# Copy the binary to /mnt/us/ on the Kindle
-scp dist/<APP> root@<kindle-ip>:/mnt/us/<APP>
-
-# Launch on the Kindle Xorg display
-ssh root@<kindle-ip> "chmod +x /mnt/us/<APP> && DISPLAY=:0 /mnt/us/<APP>"
+scp dist/KindleWiki root@<kindle-ip>:/mnt/us/KindleWiki
+ssh root@<kindle-ip> "chmod +x /mnt/us/KindleWiki && DISPLAY=:0 /mnt/us/KindleWiki"
 ```
 
-*(For the local QEMU emulator listening on port `4022`:)*
+## Examples
+
+The [`Examples/`](Examples) directory contains two sample apps in a standalone Swift package:
+
+- **KindleShowcase** (`Examples/KindleShowcase`): Demo of the available controls, layouts, navigation containers, canvas drawing, charts, and embedded WebKit view.
+- **KindleWiki** (`Examples/KindleWiki`): Wikipedia and Wiktionary reader with article search, table of contents, bookmarks, offline storage, and reading settings.
+
+## App Data
+
+Persistent storage (`@AppStorage`, `@Query` models, and cached images) is scoped by `applicationID`:
+
+- **Kindle**: `/mnt/us/appdata/<applicationID>/`
+- **macOS / Linux host**: `/tmp/kindleui-appdata/<applicationID>/`
+
+## Tests
 
 ```sh
-scp -P 4022 -i ~/Developer/eink-emulator/build/ssh/id_ed25519 dist/<APP> root@127.0.0.1:/mnt/us/<APP>
-ssh -p 4022 -i ~/Developer/eink-emulator/build/ssh/id_ed25519 root@127.0.0.1 "DISPLAY=:0 /mnt/us/<APP>"
-```
-
-#### Into the emulator disk image (emulator shut down)
-
-```sh
-scripts/deploy-emulator.sh [-e path/to/emulator] [APP ...]   # default: all dist/ binaries except *-softfp
+./test.sh
 ```
